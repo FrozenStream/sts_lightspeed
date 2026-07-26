@@ -11,7 +11,7 @@
 #include <vector>
 
 namespace sts {
-    class GameContext;
+    struct GameContext;
 }
 
 namespace sts::search {

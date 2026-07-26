@@ -174,7 +174,7 @@ void agentMtRunner(AgentMtInfo *info) {
 }
 
 void agentMt(int threadCount, std::uint64_t startSeed, int playoutCount) {
-    auto startTime = std::chrono::high_resolution_clock::now();
+    auto startTime = std::chrono::steady_clock::now();
     std::vector<std::unique_ptr<std::thread>> threads;
 
     AgentMtInfo info;
@@ -198,7 +198,7 @@ void agentMt(int threadCount, std::uint64_t startSeed, int playoutCount) {
         }
     }
 
-    auto endTime = std::chrono::high_resolution_clock::now();
+    auto endTime = std::chrono::steady_clock::now();
     double duration = std::chrono::duration<double>(endTime-startTime).count();
 
     std::cout << "w/l: (" << info.winCount  << ", " << info.lossCount << ")"
@@ -230,9 +230,9 @@ int mcts(int argc, const char *argv[]) {
 
     search::BattleScumSearcher2 searcher(bc);
 
-    auto startTime = std::chrono::high_resolution_clock::now();
+    auto startTime = std::chrono::steady_clock::now();
     searcher.search(simulationCount);
-    auto endTime = std::chrono::high_resolution_clock::now();
+    auto endTime = std::chrono::steady_clock::now();
     double duration = std::chrono::duration<double>(endTime-startTime).count();
 
     std::cout << "steps: " << simulationCount << " search time: " << duration << "s\n";

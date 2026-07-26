@@ -14,7 +14,7 @@
 
 namespace sts {
 
-    class BattleContext;
+    struct BattleContext;
     typedef std::function<void (BattleContext &)> ActionFunction;
 
     struct Action {

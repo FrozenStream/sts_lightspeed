@@ -18,7 +18,7 @@ namespace sts {
         int data;
     };
 
-    class GameContext;
+    struct GameContext;
 
     struct RelicContainer {
 

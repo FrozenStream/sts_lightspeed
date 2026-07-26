@@ -138,11 +138,11 @@ namespace sts {
     };
 
 
-    class GameContext;
+    struct GameContext;
     typedef std::function<void(GameContext&)> GameContextAction;
 
-    class BattleContext;
-    class SaveFile;
+    struct BattleContext;
+    struct SaveFile;
 
     struct GameContext {
         static constexpr float SHRINE_CHANCE = 0.25F;

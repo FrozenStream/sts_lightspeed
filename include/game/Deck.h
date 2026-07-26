@@ -16,9 +16,9 @@ namespace sts {
 
 
     class Random;
-    class GameContext;
-    class SelectScreenCard;
-    class SaveFile;
+struct GameContext;
+struct SelectScreenCard;
+struct SaveFile;
 
     typedef std::function<bool(const Card &)> CardPredicate;
 

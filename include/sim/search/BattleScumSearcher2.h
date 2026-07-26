@@ -19,7 +19,7 @@ namespace sts::search {
 
     // to find a solution to a battle with tree pruning
     struct BattleScumSearcher2 {
-        class Edge;
+        struct Edge;
         struct Node {
             std::int64_t simulationCount = 0;
             double evaluationSum = 0;

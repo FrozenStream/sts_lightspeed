@@ -35,19 +35,19 @@ namespace sts {
         }
 
         iterator begin() {
-            return arr.begin();
+            return arr.data();
         }
 
         const_iterator begin() const {
-            return arr.begin();
+            return arr.data();
         }
 
         iterator end() {
-            return arr.begin()+list_size;
+            return arr.data()+list_size;
         }
 
         const_iterator end() const {
-            return arr.begin()+list_size;
+            return arr.data()+list_size;
         }
 
         T& operator[](int idx) {

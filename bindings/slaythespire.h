@@ -38,12 +38,12 @@ namespace sts {
     };
 
     namespace search {
-        class ScumSearchAgent2;
+        struct ScumSearchAgent2;
     }
 
 
-    class GameContext;
-    class Map;
+    struct GameContext;
+    struct Map;
 
     namespace py {
 

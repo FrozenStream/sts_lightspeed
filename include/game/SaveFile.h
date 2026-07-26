@@ -27,7 +27,7 @@
 
 namespace sts {
 
-    class GameContext;
+    struct GameContext;
 
     namespace Save {
 

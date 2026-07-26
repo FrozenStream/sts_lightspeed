@@ -15,7 +15,7 @@
 
 
 namespace sts {
-    class BattleContext;
+    struct BattleContext;
 }
 
 

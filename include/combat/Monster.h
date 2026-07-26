@@ -19,7 +19,7 @@
 
 namespace sts {
 
-    class BattleContext;
+    struct BattleContext;
 
     struct DamageInfo {
         int damage = 0;
@@ -188,8 +188,13 @@ namespace sts {
     }
 
 
+#ifdef __clang__
 #pragma clang diagnostic push
+#pragma clang diagnostic ignored "-Wc++20-extensions"
+#endif
+#ifdef __INTELLISENSE__
 #pragma ide diagnostic ignored "cppcoreguidelines-narrowing-conversions"
+#endif
     template <MonsterStatus s>
     void Monster::setStatus(int amount) {
         if (isBooleanPower(s)) {
@@ -281,7 +286,9 @@ namespace sts {
                 return;
         }
     }
+#ifdef __clang__
 #pragma clang diagnostic pop
+#endif
 
     template <MonsterStatus s>
     void Monster::decrementStatus(int amount) {

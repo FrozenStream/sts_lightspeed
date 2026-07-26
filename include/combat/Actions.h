@@ -21,9 +21,9 @@
 
 namespace sts {
 
-    class BattleContext;
-    class CardInstance;
-    class CardQueueItem;
+struct BattleContext;
+struct CardInstance;
+struct CardQueueItem;
 
     typedef std::array<std::uint16_t,5> DamageMatrix;
 

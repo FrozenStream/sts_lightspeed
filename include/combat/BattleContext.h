@@ -40,7 +40,7 @@ namespace sts {
             "PLAYER_LOSS",
     };
 
-    class GameContext;
+    struct GameContext;
 
     extern thread_local BattleContext *g_debug_bc;
 

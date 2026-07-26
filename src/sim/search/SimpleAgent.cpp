@@ -1200,7 +1200,7 @@ void agentMtRunner(SimpleAgentInfo *info) {
 }
 
 void search::SimpleAgent::runAgentsMt(int threadCount, std::uint64_t startSeed, int playoutCount, bool print) {
-    auto startTime = std::chrono::high_resolution_clock::now();
+    auto startTime = std::chrono::steady_clock::now();
 
     std::vector<std::unique_ptr<std::thread>> threads;
 
@@ -1226,7 +1226,7 @@ void search::SimpleAgent::runAgentsMt(int threadCount, std::uint64_t startSeed, 
         }
     }
 
-    auto endTime = std::chrono::high_resolution_clock::now();
+    auto endTime = std::chrono::steady_clock::now();
     double duration = std::chrono::duration<double>(endTime-startTime).count();
 
     std::cout << "w/l: (" << info.winCount  << ", " << info.lossCount << ")"

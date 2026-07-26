@@ -28,7 +28,7 @@
 
 namespace sts {
 
-    class BattleContext;
+    struct BattleContext;
 
     struct Player {
         CharacterClass cc;

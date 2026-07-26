@@ -12,8 +12,8 @@
 
 namespace sts {
 
-    class GameContext;
-    class BattleContext;
+struct GameContext;
+struct BattleContext;
 
     typedef std::default_random_engine Rng;
     typedef std::function <bool(const GameContext &gc)> GameContextPredicate;

@@ -15,7 +15,7 @@
 
 namespace sts {
 
-    class BattleSimulator;
+    struct BattleSimulator;
 
     struct SimulatorContext {
         // state

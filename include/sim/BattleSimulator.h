@@ -10,8 +10,8 @@
 
 namespace sts {
 
-    class BattleContext;
-    class GameContext;
+    struct BattleContext;
+    struct GameContext;
     struct SimulatorContext;
 
     struct BattleSimulator {

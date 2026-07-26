@@ -14,8 +14,8 @@
 
 namespace sts {
 
-    class BattleContext;
-    class Card;
+struct BattleContext;
+struct Card;
 
     struct CardInstance  {
         // bytes
