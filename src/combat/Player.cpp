@@ -4,6 +4,7 @@
 
 #include <cassert>
 
+#include <constants/Misc.h>
 #include <constants/PlayerStatusEffects.h>
 #include <combat/BattleContext.h>
 #include <combat/Actions.h>
@@ -13,11 +14,8 @@ using namespace sts;
 
 
 bool Player::hasRelicRuntime(RelicId r) const {
-    if ((int) r < 64) {
-        return relicBits0 & (1ULL << (int)r);
-    } else {
-        return relicBits1 & (1ULL << ((int)r-64));
-    }
+    // 三个字（见 `Player.h` 的 `relicBitAt`）—— 旧版对 r>=128 是**移位 UB**。
+    return relicBitAt(relicBits0, relicBits1, relicBits2, (int) r);
 }
 
 bool Player::hasStatusRuntime(PlayerStatus s) const {
@@ -57,12 +55,21 @@ int Player::getStatusRuntime(PlayerStatus s) const {
         case PS::STRENGTH:
             return strength;
         default:
-            if (hasStatusRuntime(s)) {
-                return statusMap.at(s);
-            } else {
-                return 0;
-            }
+            break;
     }
+
+    if (!hasStatusRuntime(s)) {
+        return 0;
+    }
+
+    // 有些状态只置 bit、不写 statusMap，它们是**布尔型**（值就是 1）：
+    //   buff<PS::BARRICADE|CORRUPTION|CONFUSED|PEN_NIB|SURROUNDED>
+    //   debuff<PS::DRAW_REDUCTION|CONFUSED|HEX>
+    // 旧写法直接 statusMap.at(s) 在这些状态下会抛 std::out_of_range ——
+    // 只要玩家持有 Pen Nib（普通遗物）或打出 Barricade，任何走这条路径的调用都会炸，
+    // 包括 printLogs 和快照。这里改成 find + 缺省 1，让访问器对所有枚举值都成立。
+    const auto it = statusMap.find(s);
+    return it == statusMap.end() ? 1 : static_cast<int>(it->second);
 }
 
 void Player::gainBlock(BattleContext &bc, int amount) {
@@ -70,7 +77,7 @@ void Player::gainBlock(BattleContext &bc, int amount) {
         return;
     }
 
-    block += amount;
+    block = std::min(MAX_BLOCK, block + amount);
 
     if (hasStatus<PS::JUGGERNAUT>()) {
         bc.addToBot(Actions::DamageRandomEnemy(getStatus<PS::JUGGERNAUT>()));

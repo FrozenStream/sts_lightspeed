@@ -33,6 +33,10 @@ void search::BattleScumSearcher2::search(int64_t simulations) {
 
         root.evaluationSum = evaluation;
         root.simulationCount = 1;
+        ++playoutCount;
+        if (rootState->outcome == Outcome::PLAYER_VICTORY) {
+            ++winCount;
+        }
     }
 
     for (std::int64_t simCount = 0; simCount < simulations; ++simCount) {
@@ -87,6 +91,11 @@ void search::BattleScumSearcher2::step() {
 
 void search::BattleScumSearcher2::updateFromPlayout(const std::vector<Node *> &stack, const std::vector<Action> &actionStack, const BattleContext &endState) {
     const auto evaluation = evaluateEndState(endState);
+
+    ++playoutCount;
+    if (endState.outcome == Outcome::PLAYER_VICTORY) {
+        ++winCount;
+    }
 
     if (evaluation > bestActionValue) {
         bestActionSequence = actionStack;

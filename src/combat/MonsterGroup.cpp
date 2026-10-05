@@ -11,7 +11,18 @@
 using namespace sts;
 
 bool MonsterGroup::areMonstersBasicallyDead() const {
-    return monstersAlive <= 0;
+    // 原版口径：只要还有一只**不是真死**的怪，这场就还没结束；半死（转阶段的觉醒者、待复活的暗灵）
+    // 算活着。原版用 `isDying` 这个标志位表达（它只在 `die()` 里置位，半死怪走不到那里）；
+    // 端口的 `isDying()` 是 `curHp <= 0` 这个状态，所以必须像 `doMonsterTurn` 那样把 `isHalfDead()` 补回来。
+    // ⚠️ 不要退回 `monstersAlive <= 0`：那个计数器维护的是**可选中**的怪（半死怪在 `die()` 里就已经
+    //    被减掉了，活过来 / 转阶段时才补回）⇒ 觉醒者半死、暗灵待复活这些窗口里它会提前归零，
+    //    照它判胜会把整场结束掉。
+    for (int i = 0; i < monsterCount; ++i) {
+        if (!arr[i].isDeadOrEscaped() || arr[i].isHalfDead()) {
+            return false;
+        }
+    }
+    return true;
 }
 
 int MonsterGroup::getTargetableCount() const {

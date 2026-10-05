@@ -1692,6 +1692,7 @@ void Monster::takeTurn(BattleContext &bc) {     // todo, maybe for monsters that
             halfDead = false;
             miscInfo = true;
             strength = std::max(0,strength);
+            // 它在一阶段 `die()` 时掉出了 `monstersAlive`（半死不算可选中），活过来要补回。
             ++bc.monsters.monstersAlive;
             buff<MS::MINION_LEADER>();
             setMove(MonsterMoveId::AWAKENED_ONE_DARK_ECHO);

@@ -13,6 +13,7 @@
 #include "data_structure/fixed_list.h"
 #include "constants/Potions.h"
 #include "constants/MonsterEncounters.h"
+#include "game/Deck.h"
 #include "combat/InputState.h"
 #include "combat/Player.h"
 #include "combat/Monster.h"
@@ -88,6 +89,11 @@ namespace sts {
         Player player;
         MonsterGroup monsters;
         CardManager cards;
+
+        // ── 总牌组──
+        int masterDeckSize = 0;
+        std::array<int, Deck::MAX_SIZE> masterDeck {};
+
 
         CardQueueItem curCardQueueItem;
 

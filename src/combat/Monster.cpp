@@ -277,7 +277,7 @@ void Monster::heal(int amount) {
 }
 
 void Monster::addBlock(int amount) {
-    block += amount;
+    block = std::min(MAX_BLOCK, block + amount);
 }
 
 void Monster::die(BattleContext &bc) {
@@ -290,7 +290,7 @@ void Monster::die(BattleContext &bc) {
         setMove(MonsterMoveId::AWAKENED_ONE_REBIRTH);
         bc.cardQueue.clear();
 
-    } else if (bc.monsters.monstersAlive == 0 || hasStatus<MS::MINION_LEADER>()) {
+    } else if (bc.monsters.areMonstersBasicallyDead() || hasStatus<MS::MINION_LEADER>()) {
 //            bc.cleanCardQueue(); // todo should this really return like this?
         bc.outcome = Outcome::PLAYER_VICTORY;
         return;
@@ -301,9 +301,31 @@ void Monster::die(BattleContext &bc) {
         bc.addToTop( Actions::DebuffPlayer<PS::VULNERABLE>(2, bc.turnHasEnded) );
 
     } else if (hasStatus<MS::REGROW>()) {
-        resetAllStatusEffects();
-        setMove(MMID::DARKLING_REGROW);
+        // 原版 `Darkling.damage()`：先把自己标成半死，再数"同种里还有谁没半死"；一只不剩时
+        // `cannotLose = false`、全体（含自己）真死 ⇒ 这场才结束。
+        // 少这一步：半死怪按原版口径"算活着" ⇒ 三只会永远在半死 / 复活之间循环，谁也杀不死。
         halfDead = true;
+        bool allDown = true;
+        for (int i = 0; i < bc.monsters.monsterCount; ++i) {
+            if (bc.monsters.arr[i].id == id && !bc.monsters.arr[i].isHalfDead()) {
+                allDown = false;
+            }
+        }
+        if (allDown) {
+            // "真死" = 清掉 `halfDead`（`curHp <= 0` ⇒ `isDying()`）。`monstersAlive` 在转半死时
+            // 已经减过，这里**不能再减**，否则计数器会变成负数。
+            for (int i = 0; i < bc.monsters.monsterCount; ++i) {
+                if (bc.monsters.arr[i].id == id) {
+                    bc.monsters.arr[i].halfDead = false;
+                }
+            }
+            if (bc.monsters.areMonstersBasicallyDead()) {
+                bc.outcome = Outcome::PLAYER_VICTORY;
+            }
+        } else {
+            resetAllStatusEffects();
+            setMove(MMID::DARKLING_REGROW);
+        }
 
     } else if (hasStatus<MS::STASIS>()) {
         returnStasisCard(bc);
@@ -329,9 +351,10 @@ void Monster::suicideAction(BattleContext &bc) {
         return;
     }
 
-    --bc.monsters.monstersAlive;
+    // 先落地 `curHp = 0` 再判：`areMonstersBasicallyDead()` 看的是状态，不是计数器。
     curHp = 0;
-    if (bc.monsters.monstersAlive == 0) {
+    --bc.monsters.monstersAlive;
+    if (bc.monsters.areMonstersBasicallyDead()) {
         bc.outcome = Outcome::PLAYER_VICTORY;
     }
 }

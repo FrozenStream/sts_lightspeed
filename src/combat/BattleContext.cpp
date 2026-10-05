@@ -12,7 +12,6 @@ namespace sts {
     thread_local BattleContext *g_debug_bc;
 }
 
-
 // assume all bc fields have just been initialized by in class member initializers
 void BattleContext::init(const GameContext &gc) {
     init(gc, gc.info.encounter);
@@ -50,6 +49,13 @@ void BattleContext::init(const GameContext &gc, MonsterEncounter encounterToInit
     potionCapacity = gc.potionCapacity;
     potions = gc.potions;
 
+    // `gc.deck` 是定长容器（`Deck::MAX_SIZE`）
+    masterDeckSize = gc.deck.size();
+    for (int i = 0; i < masterDeckSize; ++i) {
+        const Card &c = gc.deck.cards[i];
+        masterDeck[i] = static_cast<int>(c.id) * 2 + (c.upgraded ? 1 : 0);
+    }
+
     player.curHp = gc.curHp;
     player.maxHp = gc.maxHp;
     player.gold = gc.gold;
@@ -80,6 +86,9 @@ void BattleContext::init(const GameContext &gc, MonsterEncounter encounterToInit
 void BattleContext::initRelics(const GameContext &gc) {
     player.relicBits0 = gc.relics.relicBits0;
     player.relicBits1 = gc.relics.relicBits1;
+    // ⚠️ 第三个字以前**没拷**（`RelicContainer` 有三个，`Player` 只有两个）⇒ index >= 128
+    //    的遗物在战斗里查不到；而快照的遗物块正是读 `player.relicBits*` ⇒ 会少 53 位。
+    player.relicBits2 = gc.relics.relicBits2;
 
     fixed_list<RelicId, 4> atBattleStartPreDraw;
     fixed_list<RelicId, 8> atBattleStart;
@@ -224,7 +233,7 @@ void BattleContext::initRelics(const GameContext &gc) {
                 break;
 
             case R::ANCHOR:
-                p.block += 10;
+                p.block = std::min(MAX_BLOCK, p.block + 10);
                 break;
 
             case R::ANCIENT_TEA_SET:
@@ -718,6 +727,12 @@ bool BattleContext::isCardPlayAllowed() const {
     return true;
 }
 
+// 回合上限：越过即判负（语义同 `collect.MAX_STEPS` 的「步数用尽」，不是真终局）。
+// 取值受 `ActionQueue` 容量约束：Maw 的 NOM 段数 = (turn+2)/2，且这些段**一次性**入队，
+// 段数 > 容量会在 `pushBack` 断言。取 96 ⇒ 最多 49 段（入队时队列必为空，见本函数主循环），
+// 留 1 格余量。
+constexpr int MAX_TURNS = 96;
+
 void BattleContext::executeActions() {
     // todo find a place for checking where card queue is empty and player doesn't have control for calling onEndingTurn
     ++sum;
@@ -725,9 +740,9 @@ void BattleContext::executeActions() {
 
     while (true)
     {
-        if (++loopCount > 1000000 || monsters.monstersAlive < 0 || turn > 500) {
+        if (++loopCount > 1000000 || monsters.monstersAlive < 0 || turn > MAX_TURNS) {
             // something went wrong
-            if (turn > 500) {
+            if (turn > MAX_TURNS) {
                 outcome = Outcome::PLAYER_LOSS;
                 break;
             }

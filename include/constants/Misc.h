@@ -29,6 +29,9 @@ namespace sts {
         ROUND,
     };
 
+    // 格挡上限（游戏原始语义），`Player` 与 `Monster` 共用
+    static constexpr int MAX_BLOCK = 999;
+
     static constexpr int SMALL_CHEST_CHANCE = 50;
     static constexpr int MEDIUM_CHEST_CHANCE = 33;
     static constexpr int LARGE_CHEST_CHANCE = 17;

@@ -162,6 +162,13 @@ namespace sts {
 
     static constexpr const char *potionEnumNames[] = {"INVALID","EMPTY_POTION_SLOT","AMBROSIA","ANCIENT_POTION","ATTACK_POTION","BLESSING_OF_THE_FORGE","BLOCK_POTION","BLOOD_POTION","BOTTLED_MIRACLE","COLORLESS_POTION","CULTIST_POTION","CUNNING_POTION","DEXTERITY_POTION","DISTILLED_CHAOS","DUPLICATION_POTION","ELIXIR_POTION","ENERGY_POTION","ENTROPIC_BREW","ESSENCE_OF_DARKNESS","ESSENCE_OF_STEEL","EXPLOSIVE_POTION","FAIRY_POTION","FEAR_POTION","FIRE_POTION","FLEX_POTION","FOCUS_POTION","FRUIT_JUICE","GAMBLERS_BREW","GHOST_IN_A_JAR","HEART_OF_IRON","LIQUID_BRONZE","LIQUID_MEMORIES","POISON_POTION","POTION_OF_CAPACITY","POWER_POTION","REGEN_POTION","SKILL_POTION","SMOKE_BOMB","SNECKO_OIL","SPEED_POTION","STANCE_POTION","STRENGTH_POTION","SWIFT_POTION","WEAK_POTION",};
 
+    // ⚠️ **别再从枚举手抄数字**。快照里的 `potionTypes` 曾经写死 `43`（当时枚举确实只有 43 员），
+    //    后来枚举长了 `WEAK_POTION` 一员 ⇒ 那个 43 **静默过期**，快照最后一列整条丢：
+    //    引擎照常发这瓶药、网络看不见它（实测 5.14% 的对局会踩到）。
+    //    这里给一个从数组推出来的计数 ⇒ 任何人加药水都自动生效，不需要记得改第二个地方。
+    static constexpr int potionEnumCount =
+            static_cast<int>(sizeof(potionEnumNames) / sizeof(potionEnumNames[0]));
+
     enum class PotionRarity {
         COMMON=0,
         UNCOMMON,

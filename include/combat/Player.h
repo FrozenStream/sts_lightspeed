@@ -60,6 +60,21 @@ namespace sts {
 
         std::uint64_t relicBits0 = 0;
         std::uint64_t relicBits1 = 0;
+        std::uint64_t relicBits2 = 0;
+
+        // ── 遗物位图：**只有这一处**知道位图怎么切 ──────────────────────────
+        // `hasRelic` / `hasRelicRuntime` / `setHasRelic` 全走它。旧版把同一段
+        // `if (r<64) … else 1ULL << (r-64)` 抄了 3 份，加第三个字时正是这种重复让漏洞活得下去。
+        [[nodiscard]] static bool relicBitAt(std::uint64_t w0, std::uint64_t w1, std::uint64_t w2, int r) {
+            return r < 64  ? ((w0 >> r) & 1ULL) != 0
+                 : r < 128 ? ((w1 >> (r - 64)) & 1ULL) != 0
+                           : ((w2 >> (r - 128)) & 1ULL) != 0;
+        }
+        static void setRelicBitAt(std::uint64_t &w0, std::uint64_t &w1, std::uint64_t &w2, int r, bool v) {
+            std::uint64_t &w = r < 64 ? w0 : (r < 128 ? w1 : w2);
+            const int off = r < 64 ? r : (r < 128 ? r - 64 : r - 128);
+            if (v) { w |= 1ULL << off; } else { w &= ~(1ULL << off); }
+        }
 
         // special info
         int8_t  happyFlowerCounter = 0;
@@ -443,28 +458,12 @@ namespace sts {
 
     template <RelicId r>
     void Player::setHasRelic(bool value) {
-        if (value) {
-            if ((int) r < 64) {
-                relicBits0 |= 1ULL << (int)r;
-            } else {
-                relicBits1 |= 1ULL << ((int)r-64);
-            }
-        } else {
-            if ((int) r < 64) {
-                relicBits0 &= ~(1ULL << (int)r);
-            } else {
-                relicBits1 &= ~(1ULL << ((int)r-64));
-            }
-        }
+        setRelicBitAt(relicBits0, relicBits1, relicBits2, (int) r, value);
     }
 
     template <RelicId r>
     bool Player::hasRelic() const {
-        if ((int) r < 64) {
-            return relicBits0 & (1ULL << (int)r);
-        } else {
-            return relicBits1 & (1ULL << ((int)r-64));
-        }
+        return relicBitAt(relicBits0, relicBits1, relicBits2, (int) r);
     }
 
     template<Stance s>

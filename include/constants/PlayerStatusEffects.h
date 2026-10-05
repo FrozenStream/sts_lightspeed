@@ -131,8 +131,8 @@ enum class Stance : uint8_t {
 
 static constexpr const char* const stanceStrings[] {
         "NEUTRAL",
-        "WRATH",
         "CALM",
+        "WRATH",
         "DIVINITY",
 };
 

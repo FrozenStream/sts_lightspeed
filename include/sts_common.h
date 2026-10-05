@@ -12,6 +12,7 @@
 //#define sts_card_manager_use_fixed_list
 
 
+#include <algorithm>
 #include <cstdint>
 
 

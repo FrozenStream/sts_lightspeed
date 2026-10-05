@@ -9,9 +9,13 @@ file (GLOB_RECURSE sts_lightspeed_SOURCES CONFIGURE_DEPENDS "src/*.cpp")
 
 set(CMAKE_CXX_STANDARD 17)
 
+if(MSVC)
+    add_compile_options(/EHsc)
+endif()
+
 # GCC/Clang flags
 if(CMAKE_CXX_COMPILER_ID MATCHES "GNU|Clang")
-    set(CMAKE_CXX_FLAGS  "-Wno-shift-count-overflow -O3")
+    string(APPEND CMAKE_CXX_FLAGS " -Wno-shift-count-overflow -O3")
 elseif(MSVC)
     # MSVC: /O2 is equivalent to -O3 optimization level
     set(CMAKE_CXX_FLAGS_RELEASE "/O2")
@@ -24,7 +28,21 @@ pybind11_add_module(slaythespire bindings/slaythespire.cpp bindings/bindings-uti
 target_include_directories(slaythespire PUBLIC include)
 target_include_directories(slaythespire PUBLIC json/single_include)
 target_include_directories(slaythespire PUBLIC bindings)
-target_compile_options(slaythespire PRIVATE /EHsc)
+
+# .pyi
+if(WIN32)
+    set(_STS_VENV_PY "${CMAKE_SOURCE_DIR}/.venv/Scripts/python.exe")
+else()
+    set(_STS_VENV_PY "${CMAKE_SOURCE_DIR}/.venv/bin/python")
+endif()
+if(EXISTS "${_STS_VENV_PY}")
+    add_custom_command(
+            TARGET slaythespire POST_BUILD
+            COMMAND "${_STS_VENV_PY}" -m pybind11_stubgen slaythespire -o "$<TARGET_FILE_DIR:slaythespire>"
+            COMMENT "refresh slaythespire.pyi (pybind11_stubgen)")
+else()
+    message(WARNING "python no found: ${_STS_VENV_PY}")
+endif()
 
 
 add_executable(main apps/main.cpp ${sts_lightspeed_SOURCES})
