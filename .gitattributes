@@ -1,0 +1,7 @@
+# ⚠️ 远端（Linux）要执行的脚本**必须保持 LF**。
+#
+# 实测：`git add _runjob.sh` 时 Git 警告 "LF will be replaced by CRLF"。
+# 一旦被转成 CRLF，远端 `bash _runjob.sh` 会报 `$'\r': command not found` ——
+# 而且这个错很难联想到换行符（脚本通过 tar 推送，本地内容就是远端内容，
+# 所以只有 git checkout 之后才会突然开始失败）。
+*.sh text eol=lf

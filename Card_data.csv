@@ -1,0 +1,368 @@
+﻿page,card_id,name_en,color,type,rarity,cost,upgrade_cost
+凌迟,A Thousand Cuts,A Thousand Cuts,绿色,能力,稀有,2,2
+汇集,Aggregate,Aggregate,蓝色,技能,罕见,1,1
+杂技,Acrobatics,Acrobatics,绿色,技能,普通,1,1
+余像,After Image,After Image,绿色,能力,稀有,1,1
+全力攻击,All Out Attack,All Out Attack,绿色,攻击,罕见,1,1
+精准,Accuracy,Accuracy,绿色,能力,罕见,1,1
+万物一心,All For One,All For One,蓝色,攻击,稀有,2,2
+肾上腺素,Adrenaline,Adrenaline,绿色,技能,稀有,0,0
+增幅,Amplify,Amplify,蓝色,技能,稀有,1,1
+阿尔法,Alpha,Alpha,紫色,技能,稀有,1,1
+愤怒,Anger,Anger,红色,攻击,普通,0,0
+武装,Armaments,Armaments,红色,技能,普通,1,1
+神化,Apotheosis,Apotheosis,无色,技能,稀有,2,1
+进阶之灾,Ascenders Bane,Ascenders Bane,诅咒,诅咒,特殊,-2,0
+后空翻,Backflip,Backflip,绿色,技能,普通,1,1
+背刺,Backstab,Backstab,绿色,攻击,罕见,0,0
+自动护盾,Auto Shields,Auto Shields,蓝色,技能,罕见,1,1
+包扎,Bandage Up,Bandage Up,无色,技能,罕见,0,0
+灾祸,Bane,Bane,绿色,攻击,普通,1,1
+球状闪电,Ball Lightning,Ball Lightning,蓝色,攻击,普通,1,1
+弹幕齐射,Barrage,Barrage,蓝色,攻击,普通,1,1
+壁垒,Barricade,Barricade,红色,能力,稀有,3,2
+痛击,Bash,Bash,红色,攻击,初始,2,2
+战歌,Battle Hymn,Battle Hymn,紫色,能力,罕见,1,1
+狂暴,Berserk,Berserk,红色,能力,稀有,0,0
+战斗专注,Battle Trance,Battle Trance,红色,技能,罕见,0,0
+光束射线,Beam Cell,Beam Cell,蓝色,攻击,普通,0,0
+偏差认知,Biased Cognition,Biased Cognition,蓝色,能力,稀有,1,1
+噬咬,Bite,Bite,无色,攻击,特殊,1,1
+贝塔,Beta,Beta,无色,技能,特殊,2,1
+刀刃之舞,Blade Dance,Blade Dance,绿色,技能,普通,1,1
+渎神,Blasphemy,Blasphemy,紫色,技能,稀有,1,1
+启动流程,Boot Sequence,Boot Sequence,蓝色,技能,罕见,0,0
+致盲,Blind,Blind,无色,技能,罕见,0,0
+以血还血,Blood for Blood,Blood for Blood,红色,攻击,罕见,4,3
+放血,Bloodletting,Bloodletting,红色,技能,罕见,0,0
+暴雪,Blizzard,Blizzard,蓝色,攻击,罕见,1,1
+残影,Blur,Blur,绿色,技能,罕见,1,1
+重锤,Bludgeon,Bludgeon,红色,攻击,稀有,3,3
+全身撞击,Body Slam,Body Slam,红色,攻击,普通,1,0
+碰撞连击,Bowling Bash,Bowling Bash,紫色,攻击,普通,1,1
+弹跳药瓶,Bouncing Flask,Bouncing Flask,绿色,技能,罕见,2,2
+灼伤,Burn,Burn,无色,状态,特殊,-2,-2
+子弹时间,Bullet Time,Bullet Time,绿色,技能,稀有,3,2
+光辉,Brilliance,Brilliance,紫色,攻击,稀有,1,1
+燃烧契约,Burning Pact,Burning Pact,红色,技能,罕见,1,1
+缓冲,Buffer,Buffer,蓝色,能力,稀有,2,2
+残暴,Brutality,Brutality,红色,能力,稀有,0,0
+爆发,Burst,Burst,绿色,技能,稀有,1,1
+计算下注,Calculated Gamble,Calculated Gamble,绿色,技能,罕见,0,0
+扩容,Capacitor,Capacitor,蓝色,能力,罕见,1,1
+铁蒺藜,Caltrops,Caltrops,绿色,能力,罕见,1,1
+残杀,Carnage,Carnage,红色,攻击,罕见,2,2
+催化剂,Catalyst,Catalyst,绿色,技能,罕见,1,1
+改造现实,Carve Reality,Carve Reality,紫色,攻击,罕见,1,1
+勒脖,Choke,Choke,绿色,攻击,罕见,2,2
+冰寒,Chill,Chill,蓝色,技能,罕见,0,0
+混沌,Chaos,Chaos,蓝色,技能,罕见,1,1
+结茧,Chrysalis,Chrysalis,无色,技能,稀有,2,2
+交锋,Clash,Clash,红色,攻击,普通,0,0
+斗篷与匕首,Cloak And Dagger,Cloak And Dagger,绿色,技能,普通,1,1
+顺劈斩,Cleave,Cleave,红色,攻击,普通,1,1
+笨拙,Clumsy,Clumsy,诅咒,诅咒,诅咒,-2,-2
+金刚臂,Clothesline,Clothesline,红色,攻击,普通,2,2
+寒流,Cold Snap,Cold Snap,蓝色,攻击,普通,1,1
+收集,Collect,Collect,紫色,技能,罕见,-1,-1
+自燃,Combust,Combust,红色,能力,罕见,1,1
+编译冲击,Compile Driver,Compile Driver,蓝色,攻击,普通,1,1
+结末,Conclude,Conclude,紫色,攻击,罕见,1,1
+全神贯注,Concentrate,Concentrate,绿色,技能,罕见,0,0
+聚能成刃,Conjure Blade,Conjure Blade,紫色,技能,稀有,-1,-1
+供奉,Consecrate,Consecrate,紫色,攻击,普通,0,0
+耗尽,Consume,Consume,蓝色,技能,罕见,2,2
+充电,Charge Battery,Charge Battery,蓝色,技能,普通,1,1
+核心电涌,Core Surge,Core Surge,蓝色,攻击,稀有,1,1
+冷静头脑,Coolheaded,Coolheaded,蓝色,技能,普通,1,1
+腐化,Corruption,Corruption,红色,能力,稀有,3,2
+创造性AI,Creative AI,Creative AI,蓝色,能力,稀有,3,2
+渐强,Crescendo,Crescendo,紫色,技能,普通,1,0
+尸爆术,Corpse Explosion,Corpse Explosion,绿色,技能,稀有,2,2
+粉碎关节,Crush Joints,Crush Joints,紫色,攻击,普通,1,1
+致残毒云,Crippling Poison,Crippling Poison,绿色,技能,罕见,2,2
+斩破命运,Cut Through Fate,Cut Through Fate,紫色,攻击,普通,1,1
+铃铛的诅咒,Curse of the Bell,Curse of the Bell,诅咒,诅咒,特殊,-2,-2
+匕首雨,Dagger Spray,Dagger Spray,绿色,攻击,普通,1,1
+投掷匕首,Dagger Throw,Dagger Throw,绿色,攻击,普通,1,1
+黑暗之拥,Dark Embrace,Dark Embrace,红色,能力,罕见,2,1
+漆黑,Darkness,Darkness,蓝色,技能,罕见,1,1
+冲刺,Dash,Dash,绿色,攻击,罕见,2,2
+黑暗镣铐,Dark Shackles,Dark Shackles,无色,技能,罕见,0,0
+致命毒药,Deadly Poison,Deadly Poison,绿色,技能,普通,1,1
+晕眩,Dazed,Dazed,无色,状态,特殊,-2,-2
+深呼吸,Deep Breath,Deep Breath,无色,技能,罕见,0,0
+腐朽,Decay,Decay,诅咒,诅咒,诅咒,-2,-2
+防御（蓝）,Defend_B,Defend,蓝色,技能,初始,1,1
+防御（紫）,Defend_P,Defend,紫色,技能,初始,1,1
+防御（绿）,Defend_G,Defend,绿色,技能,初始,1,1
+防御（红）,Defend_R,Defend,红色,技能,初始,1,1
+碎片整理,Defragment,Defragment,蓝色,能力,罕见,1,1
+偏折,Deflect,Deflect,绿色,技能,普通,0,0
+恶魔形态,Demon Form,Demon Form,红色,能力,稀有,3,3
+机械降神,Deus Ex Machina,Deus Ex Machina,紫色,技能,稀有,-2,-2
+天人形态,Deva Form,Deva Form,紫色,能力,稀有,3,3
+虔信,Devotion,Devotion,紫色,能力,稀有,1,1
+死吧死吧死吧,Die Die Die,Die Die Die,绿色,攻击,稀有,1,1
+闪躲翻滚,Dodge and Roll,Dodge and Roll,绿色,技能,普通,1,1
+发现,Discovery,Discovery,无色,技能,罕见,1,1
+缴械,Disarm,Disarm,红色,技能,罕见,1,1
+声东击西,Distraction,Distraction,绿色,技能,罕见,1,0
+愁云惨淡,Doom and Gloom,Doom and Gloom,蓝色,攻击,罕见,2,2
+双重存在,Doppelganger,Doppelganger,绿色,技能,稀有,-1,-1
+双倍能量,Double Energy,Double Energy,蓝色,技能,罕见,1,0
+双发,Double Tap,Double Tap,红色,技能,稀有,1,1
+闪亮登场,Dramatic Entrance,Dramatic Entrance,无色,攻击,罕见,0,0
+疑虑,Doubt,Doubt,诅咒,诅咒,诅咒,-2,-2
+飞身踢,Dropkick,Dropkick,红色,攻击,罕见,1,1
+回响形态,Echo Form,Echo Form,蓝色,能力,稀有,3,3
+双持,Dual Wield,Dual Wield,红色,技能,罕见,1,1
+双重释放,Dualcast,Dualcast,蓝色,技能,初始,1,0
+电动力学,Electrodynamics,Electrodynamics,蓝色,能力,稀有,2,2
+化体为空,Empty Body,Empty Body,紫色,技能,普通,1,1
+化拳为空,Empty Fist,Empty Fist,紫色,攻击,普通,1,1
+化智为空,Empty Mind,Empty Mind,紫色,技能,罕见,1,1
+无尽苦痛,Endless Agony,Endless Agony,绿色,攻击,罕见,0,0
+开悟,Enlightenment,Enlightenment,无色,技能,罕见,0,0
+巩固,Entrench,Entrench,红色,技能,罕见,2,1
+暴怒,Eruption,Eruption,紫色,攻击,初始,2,1
+涂毒,Envenom,Envenom,绿色,能力,稀有,2,1
+确立基础,Establishment,Establishment,紫色,能力,稀有,1,1
+逃脱计划,Escape Plan,Escape Plan,绿色,技能,罕见,0,0
+内脏切除,Eviscerate,Eviscerate,绿色,攻击,罕见,3,3
+评估,Evaluate,Evaluate,紫色,技能,普通,1,1
+发掘,Exhume,Exhume,红色,技能,稀有,1,0
+进化,Evolve,Evolve,红色,能力,罕见,1,1
+灭除之刃,Expunger,Expunger,无色,攻击,特殊,1,1
+独门技术,Expertise,Expertise,绿色,技能,罕见,1,1
+斋戒,Fasting,Fasting,紫色,能力,罕见,2,2
+不惧妖邪,Fear No Evil,Fear No Evil,紫色,攻击,罕见,1,1
+狂宴,Feed,Feed,红色,攻击,稀有,1,1
+无惧疼痛,Feel No Pain,Feel No Pain,红色,能力,罕见,1,1
+妙计,Finesse,Finesse,无色,技能,罕见,0,0
+恶魔之焰,Fiend Fire,Fiend Fire,红色,攻击,稀有,2,2
+火焰吐息,Fire Breathing,Fire Breathing,红色,能力,罕见,1,1
+终结技,Finisher,Finisher,绿色,攻击,罕见,1,1
+裂变,Fission,Fission,蓝色,技能,稀有,0,0
+火焰屏障,Flame Barrier,Flame Barrier,红色,技能,罕见,2,2
+亮剑,Flash of Steel,Flash of Steel,无色,攻击,罕见,0,0
+飞镖,Flechettes,Flechettes,绿色,攻击,罕见,1,1
+活动肌肉,Flex,Flex,红色,技能,普通,0,0
+疾风连击,Flurry of Blows,Flurry of Blows,紫色,攻击,普通,0,0
+飞膝,Flying Knee,Flying Knee,绿色,攻击,普通,1,1
+流云飞袖,Flying Sleeves,Flying Sleeves,紫色,攻击,普通,1,1
+灵动步法,Footwork,Footwork,绿色,能力,罕见,1,1
+力场,Force Field,Force Field,蓝色,技能,罕见,4,4
+追击,Follow-Up,Follow-Up,紫色,攻击,普通,1,1
+他山之石,Foreign Influence,Foreign Influence,紫色,技能,罕见,0,0
+先见之明,Foresight,Foresight,紫色,能力,罕见,1,1
+预谋,Forethought,Forethought,无色,技能,罕见,0,0
+聚变,Fusion,Fusion,蓝色,技能,罕见,2,1
+超越光速,FTL,FTL,蓝色,攻击,罕见,0,0
+爪击,Gash,Gash,蓝色,攻击,普通,0,0
+遗传算法,Genetic Algorithm,Genetic Algorithm,蓝色,技能,罕见,1,1
+灵体,Ghostly,Ghostly,无色,技能,特殊,1,1
+幽灵铠甲,Ghostly Armor,Ghostly Armor,红色,技能,罕见,1,1
+玻璃刀刃,Glass Knife,Glass Knife,绿色,攻击,稀有,1,1
+冰川,Glacier,Glacier,蓝色,技能,罕见,2,2
+眼部攻击,Go for the Eyes,Go for the Eyes,蓝色,攻击,普通,0,0
+优秀直觉,Good Instincts,Good Instincts,无色,技能,罕见,0,0
+华丽收场,Grand Finale,Grand Finale,绿色,攻击,稀有,0,0
+停顿,Halt,Halt,紫色,技能,普通,0,0
+贪婪之手,Hand Of Greed,Hand Of Greed,无色,攻击,稀有,2,2
+破灭,Havoc,Havoc,红色,技能,普通,1,0
+散热片,Heatsinks,Heatsinks,蓝色,能力,罕见,1,1
+头槌,Head butt,Head butt,红色,攻击,普通,1,1
+重刃,Heavy Blade,Heavy Blade,红色,攻击,普通,2,2
+足跟勾,Heel Hook,Heel Hook,绿色,攻击,罕见,1,1
+你好，世界,Hello World,Hello World,蓝色,能力,罕见,1,1
+御血术,Hemokinesis,Hemokinesis,红色,攻击,罕见,1,1
+全息影像,Hologram,Hologram,蓝色,技能,普通,1,1
+超能光束,Hyperbeam,Hyperbeam,蓝色,攻击,稀有,2,2
+燔祭,Immolate,Immolate,红色,攻击,稀有,2,2
+急躁,Impatience,Impatience,无色,技能,罕见,0,0
+岿然不动,Impervious,Impervious,红色,技能,稀有,2,2
+地狱之刃,Infernal Blade,Infernal Blade,红色,技能,罕见,1,0
+义愤填膺,Indignation,Indignation,紫色,技能,罕见,1,1
+无限刀刃,Infinite Blades,Infinite Blades,绿色,能力,罕见,1,1
+燃烧,Inflame,Inflame,红色,能力,罕见,1,1
+受伤,Injury,Injury,诅咒,诅咒,诅咒,-2,-2
+内心宁静,Inner Peace,Inner Peace,紫色,技能,罕见,1,1
+洞见,Insight,Insight,无色,技能,特殊,0,0
+威吓,Intimidate,Intimidate,红色,技能,罕见,0,0
+铁斩波,Iron Wave,Iron Wave,红色,攻击,普通,1,1
+审判,Judgment,Judgment,紫色,技能,稀有,1,1
+J.A.X.,J.A.X.,J.A.X.,无色,技能,特殊,0,0
+势不可当,Juggernaut,Juggernaut,红色,能力,稀有,2,2
+花样百出,Jack Of All Trades,Jack Of All Trades,无色,技能,罕见,0,0
+飞跃,Leap,Leap,蓝色,技能,普通,1,1
+幸运一击,Just Luck,Just Luck,紫色,攻击,普通,0,0
+扫腿,Leg Sweep,Leg Sweep,绿色,技能,罕见,2,2
+勤学精进,Lesson Learned,Lesson Learned,紫色,攻击,稀有,2,2
+如水,Like Water,Like Water,紫色,能力,罕见,1,1
+瞄准靶心,Bullseye,Bullseye,蓝色,攻击,罕见,1,1
+突破极限,Limit Break,Limit Break,红色,技能,稀有,1,1
+机器学习,Machine Learning,Machine Learning,蓝色,能力,稀有,1,1
+循环,Loop,Loop,蓝色,能力,罕见,1,1
+疯狂,Madness,Madness,无色,技能,罕见,1,0
+磁力,Magnetism,Magnetism,无色,能力,稀有,2,1
+萎靡,Malaise,Malaise,绿色,技能,稀有,-1,-1
+战略大师,Master of Strategy,Master of Strategy,无色,技能,稀有,0,0
+操控现实,Master Reality,Master Reality,紫色,能力,稀有,1,0
+精巧刺击,Masterful Stab,Masterful Stab,绿色,攻击,罕见,0,0
+熔化,Melter,Melter,蓝色,攻击,罕见,1,1
+心灵堡垒,Mental Fortress,Mental Fortress,紫色,能力,罕见,1,1
+冥想,Meditate,Meditate,紫色,技能,罕见,1,1
+乱战,Mayhem,Mayhem,无色,能力,稀有,2,1
+金属化,Metallicize,Metallicize,红色,能力,罕见,1,1
+羽化,Metamorphosis,Metamorphosis,无色,技能,稀有,2,2
+陨石打击,Meteor Strike,Meteor Strike,蓝色,攻击,稀有,5,5
+奇迹,Miracle,Miracle,无色,技能,特殊,0,0
+心灵震慑,Mind Blast,Mind Blast,无色,攻击,罕见,2,1
+多重释放,Multi-Cast,Multi-Cast,蓝色,技能,稀有,-1,-1
+死灵诅咒,Necronomicurse,Necronomicurse,诅咒,诅咒,特殊,-2,-2
+涅槃,Nirvana,Nirvana,紫色,能力,罕见,1,1
+夜魇,Night Terror,Night Terror,绿色,技能,稀有,3,2
+凡庸,Normality,Normality,诅咒,诅咒,诅咒,-2,-2
+中和,Neutralize,Neutralize,绿色,攻击,初始,0,0
+毒雾,Noxious Fumes,Noxious Fumes,绿色,能力,罕见,1,1
+祭品,Offering,Offering,红色,技能,稀有,0,0
+通晓万物,Omniscience,Omniscience,紫色,技能,稀有,4,3
+欧米伽,Omega,Omega,无色,能力,特殊,3,3
+疼痛,Pain,Pain,诅咒,诅咒,诅咒,-2,-2
+抢占先机,Outmaneuver,Outmaneuver,绿色,技能,普通,1,1
+万能药,Panacea,Panacea,无色,技能,罕见,0,0
+神气制胜,Panache,Panache,无色,能力,稀有,0,0
+寄生,Parasite,Parasite,诅咒,诅咒,诅咒,-2,-2
+完美打击,Perfected Strike,Perfected Strike,红色,攻击,普通,2,2
+应急按钮,Panic Button,Panic Button,无色,技能,罕见,0,0
+坚韧,Perseverance,Perseverance,紫色,技能,罕见,1,1
+幻影杀手,Phantasmal Killer,Phantasmal Killer,绿色,技能,稀有,1,0
+尖啸,Piercing Wail,Piercing Wail,绿色,技能,普通,1,1
+带毒刺击,Poisoned Stab,Poisoned Stab,绿色,攻击,普通,1,1
+剑柄打击,Pommel Strike,Pommel Strike,红色,攻击,普通,1,1
+祈祷,Pray,Pray,紫色,技能,罕见,1,1
+硬撑,Power Through,Power Through,红色,技能,罕见,1,1
+早有准备,Prepared,Prepared,绿色,技能,普通,0,0
+猎杀者,Predator,Predator,绿色,攻击,罕见,2,2
+点穴,Pressure Points,Pressure Points,紫色,技能,普通,1,1
+傲慢,Pride,Pride,诅咒,诅咒,特殊,1,0
+五体投地,Prostrate,Prostrate,紫色,技能,普通,0,0
+护身,Protect,Protect,紫色,技能,普通,2,2
+连续拳,Pummel,Pummel,红色,攻击,罕见,1,1
+净化,Purity,Purity,无色,技能,罕见,0,0
+快斩,Quick Slash,Quick Slash,绿色,攻击,普通,1,1
+狂怒,Rage,Rage,红色,技能,罕见,0,0
+诸神之黄昏,Ragnarok,Ragnarok,紫色,攻击,稀有,3,3
+暴走,Rampage,Rampage,红色,攻击,罕见,1,1
+立地升天,Reach Heaven,Reach Heaven,紫色,攻击,罕见,2,2
+彩虹,Rainbow,Rainbow,蓝色,技能,稀有,2,2
+死亡收割,Reaper,Reaper,红色,攻击,稀有,2,2
+重启,Reboot,Reboot,蓝色,技能,稀有,0,0
+弹回,Rebound,Rebound,蓝色,攻击,普通,1,1
+无谋冲锋,Reckless Charge,Reckless Charge,红色,攻击,罕见,0,0
+回收,Recycle,Recycle,蓝色,技能,罕见,1,0
+递归,Recursion,Recursion,蓝色,技能,普通,1,0
+本能反应,Reflex,Reflex,绿色,技能,罕见,0,0
+硬化机体,Reinforced Body,Reinforced Body,蓝色,技能,罕见,-1,-1
+悔恨,Regret,Regret,诅咒,诅咒,诅咒,-2,-2
+重编程,Reprogram,Reprogram,蓝色,技能,罕见,1,1
+千穿百刺,Riddle with Holes,Riddle with Holes,绿色,攻击,罕见,2,2
+狂乱撕扯,Rip and Tear,Rip and Tear,蓝色,攻击,罕见,1,1
+仪式匕首,Ritual Dagger,Ritual Dagger,无色,攻击,特殊,1,1
+撕裂,Rupture,Rupture,红色,能力,罕见,1,1
+猛虎下山,Rushdown,Rushdown,紫色,能力,罕见,1,0
+残虐天性,Sadistic Nature,Sadistic Nature,无色,能力,稀有,0,0
+平安,Safety,Safety,无色,技能,特殊,1,1
+腰带抽打,Sash Whip,Sash Whip,紫色,攻击,普通,1,1
+圣洁,Sanctity,Sanctity,紫色,技能,罕见,1,1
+时之沙,Sands of Time,Sands of Time,紫色,攻击,罕见,4,4
+刮削,Scrape,Scrape,蓝色,攻击,罕见,1,1
+潦草急就,Scrawl,Scrawl,紫色,技能,稀有,1,0
+欺瞒现实,Deceive Reality,Deceive Reality,紫色,技能,罕见,1,1
+灼热攻击,Searing Blow,Searing Blow,红色,攻击,罕见,2,2
+重振精神,Second Wind,Second Wind,红色,技能,罕见,1,1
+秘密技法,Secret Technique,Secret Technique,无色,技能,稀有,0,0
+秘密武器,Secret Weapon,Secret Weapon,无色,技能,稀有,0,0
+盛怒,Seeing Red,Seeing Red,红色,技能,罕见,1,0
+自我修复,Self Repair,Self Repair,蓝色,能力,罕见,1,1
+搜寻,Seek,Seek,蓝色,技能,稀有,0,0
+哨卫,Sentinel,Sentinel,红色,技能,罕见,1,1
+部署,Setup,Setup,绿色,技能,罕见,1,0
+断魂斩,Sever Soul,Sever Soul,红色,攻击,罕见,2,2
+羞耻,Shame,Shame,诅咒,诅咒,诅咒,-2,-2
+小刀,Shiv,Shiv,无色,攻击,特殊,0,0
+耸肩无视,Shrug It Off,Shrug It Off,红色,技能,普通,1,1
+震荡波,Shockwave,Shockwave,红色,技能,罕见,2,2
+怒火中烧,Simmering Fury,Simmering Fury,紫色,技能,罕见,1,1
+招牌技,Signature Move,Signature Move,紫色,攻击,罕见,2,2
+串刺,Skewer,Skewer,绿色,攻击,罕见,-1,-1
+快速检索,Skim,Skim,蓝色,技能,罕见,1,1
+切割,Slice,Slice,绿色,攻击,普通,0,0
+黏液,Slimed,Slimed,无色,状态,特殊,1,0
+惩恶,Smite,Smite,无色,攻击,特殊,1,1
+精神护盾,Spirit Shield,Spirit Shield,紫色,技能,稀有,2,2
+堆栈,Stack,Stack,蓝色,技能,普通,1,1
+观察弱点,Spot Weakness,Spot Weakness,红色,技能,罕见,1,1
+静电释放,Static Discharge,Static Discharge,蓝色,能力,罕见,1,1
+超频,Steam Power,Steam Power,蓝色,技能,罕见,0,0
+蒸汽护壁,Steam,Steam,蓝色,技能,普通,0,0
+钢铁风暴,Storm of Steel,Storm of Steel,绿色,技能,稀有,1,1
+雷暴,Storm,Storm,蓝色,能力,罕见,1,1
+精简改良,Streamline,Streamline,蓝色,攻击,普通,2,2
+打击（紫）,Strike_P,Strike,紫色,攻击,初始,1,1
+打击（蓝）,Strike_B,Strike,蓝色,攻击,初始,1,1
+打击（绿）,Strike_G,Strike,绿色,攻击,初始,1,1
+打击（红）,Strike_R,Strike,红色,攻击,初始,1,1
+突然一拳,Sucker Punch,Sucker Punch,绿色,攻击,普通,1,1
+研习,Study,Study,紫色,能力,罕见,2,1
+生存者,Survivor,Survivor,绿色,技能,初始,1,1
+分离,Sunder,Sunder,蓝色,攻击,罕见,3,3
+扫荡射线,Sweeping Beam,Sweeping Beam,蓝色,攻击,普通,1,1
+迅捷打击,Swift Strike,Swift Strike,无色,攻击,罕见,0,0
+飞剑回旋镖,Sword Boomerang,Sword Boomerang,红色,攻击,普通,1,1
+旋身,Swivel,Swivel,紫色,技能,罕见,2,2
+战术大师,Tactician,Tactician,绿色,技能,罕见,0,0
+以手拒之,Talk to the Hand,Talk to the Hand,紫色,攻击,罕见,1,1
+发泄,Tantrum,Tantrum,紫色,攻击,罕见,1,1
+暴风雨,Tempest,Tempest,蓝色,技能,罕见,-1,-1
+恐怖,Terror,Terror,绿色,技能,罕见,1,0
+炸弹,The Bomb,The Bomb,无色,技能,稀有,2,2
+深谋远虑,Thinking Ahead,Thinking Ahead,无色,技能,稀有,0,0
+天眼,Third Eye,Third Eye,紫色,技能,普通,1,1
+雷霆打击,Thunder Strike,Thunder Strike,蓝色,攻击,稀有,3,3
+以暴易暴,Through Violence,Through Violence,无色,攻击,特殊,0,0
+闪电霹雳,Thunderclap,Thunderclap,红色,攻击,普通,1,1
+必备工具,Tools of the Trade,Tools of the Trade,绿色,能力,稀有,1,0
+安宁,Tranquility,Tranquility,紫色,技能,普通,1,0
+转化,Transmutation,Transmutation,无色,技能,稀有,-1,-1
+绊倒,Trip,Trip,无色,技能,罕见,0,0
+坚毅,True Grit,True Grit,红色,技能,普通,1,1
+双重打击,Twin Strike,Twin Strike,红色,攻击,普通,1,1
+内核加速,Turbo,Turbo,蓝色,技能,普通,0,0
+隐秘打击,Sneaky Strike,Sneaky Strike,绿色,攻击,普通,2,2
+均衡,Undo,Undo,蓝色,技能,罕见,2,2
+乾坤一掷,Unload,Unload,绿色,攻击,稀有,1,1
+上勾拳,Uppercut,Uppercut,红色,攻击,罕见,2,2
+腾跃,Vault,Vault,紫色,技能,稀有,3,2
+炼制药水,Venomology,Venomology,绿色,技能,稀有,1,0
+警惕,Vigilance,Vigilance,紫色,技能,初始,2,2
+暴力,Violence,Violence,无色,技能,稀有,0,0
+虚空,Void,Void,无色,状态,特殊,-2,-2
+当头棒喝,Wallop,Wallop,紫色,攻击,罕见,2,2
+战吼,Warcry,Warcry,红色,技能,普通,0,0
+摆手,Wave of the Hand,Wave of the Hand,紫色,技能,罕见,1,1
+迂回,Weave,Weave,紫色,攻击,罕见,0,0
+计划妥当,Well Laid Plans,Well Laid Plans,绿色,能力,罕见,1,1
+回环踢,Wheel Kick,Wheel Kick,紫色,攻击,罕见,2,2
+旋风斩,Whirlwind,Whirlwind,红色,攻击,罕见,-1,-1
+白噪声,White Noise,White Noise,蓝色,技能,罕见,1,0
+狂野打击,Wild Strike,Wild Strike,红色,攻击,普通,1,1
+旋转打击,Windmill Strike,Windmill Strike,紫色,攻击,罕见,2,2
+许愿,Wish,Wish,紫色,技能,稀有,3,3
+敬拜,Worship,Worship,紫色,技能,罕见,2,2
+幽魂形态,Wraith Form v2,Wraith Form,绿色,能力,稀有,3,3
+伤口,Wound,Wound,无色,状态,特殊,-2,-2
+火焰纹,Wreath of Flame,Wreath of Flame,紫色,技能,罕见,1,1
+苦恼,Writhe,Writhe,诅咒,诅咒,诅咒,-2,-2
+电击,Zap,Zap,蓝色,技能,初始,1,0
