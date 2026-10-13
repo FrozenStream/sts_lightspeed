@@ -13,9 +13,13 @@
 #include <cstdint>
 #include <utility>
 
+#include <cmath>
+
 #include "constants/Rooms.h"
+#include "snapshot.h"    // handSlots / maxMonsters / potionSlots（容量常量的单一来源）
+#include "constants/RelicPools.h"                // sts::eventRelics（事件遗物池权威表）
 #include "sim/search/Action.h"
-#include "sim/search/BattleScumSearcher2.h"   // defaultExplorationParameter（单一来源）
+#include "sim/search/BattleScumSearcher2.h"   // UCB 常数在它自己那条表达式里（`3*sqrt(2)`）
 
 namespace sts {
 
@@ -83,11 +87,12 @@ namespace sts {
 
         inline constexpr int handStride = 6;        // [no target, enemy 1, enemy 2, enemy 3, enemy 4]
         inline constexpr int potionStride = 7;      // [no target, enemy 1, enemy 2, enemy 3, enemy 4, discard]
-        inline constexpr int maxMonsters = 5;
-        inline constexpr int handSlots = 10;
-        inline constexpr int potionSlots = 5;
-        inline constexpr int potionBase = handSlots * handStride;
-        inline constexpr int endTurnIdx = potionBase + potionSlots * potionStride;
+        // 容量常量的**唯一定义**在 `collect/snapshot.h`（快照与动作空间共用，`sts::collect`）。
+        // ⚠️ 这里一律写**全限定名**：`bindings-util.cpp` / `engine-test.cpp` 那些 TU 同时在
+        //    `sts`、`sts::py`、`sts::collect` 三个命名空间里做非限定查找，短名会撞成二义
+        //    （实测 `reference to 'maxMonsters' is ambiguous`）。
+        inline constexpr int potionBase = sts::collect::handSlots * handStride;
+        inline constexpr int endTurnIdx = potionBase + sts::collect::potionSlots * potionStride;
         inline constexpr int unifiedActionCount = endTurnIdx + 1;
 
         struct SearchStats {
@@ -109,29 +114,26 @@ namespace sts {
         std::vector<std::vector<int>> getDrawPile(const BattleContext &bc);
         std::vector<std::vector<int>> getDiscardPile(const BattleContext &bc);
 
+        // 重排抽牌堆（`java::Random(seed)` 的一次均匀洗牌）。只改牌序：张数不变，
+        // `shuffleRng` 等游戏随机流一律不动。用途 = 把「搜索看得见抽牌顺序」这个预言机
+        // 泄漏变成可对照的显式变量。
+        void shuffleDrawPile(BattleContext &bc, std::uint64_t seed);
+
         // ── C++ UCT ──
         void scumSearchStep(BattleContext &bc, std::int64_t simulations);
         // 从当前状态搜 N 次，返回根孩子 [(Action, 访问次数), ...]（= 原始 N(s,a)，调用方自己
         // 归一成 π）；终局返回空。
         std::vector<std::pair<search::Action, std::int64_t>> rootPolicy(BattleContext &bc, std::int64_t simulations);
-        // `explorationParameter` 透传给它自己（不给就用 3√2）；抽出来是为了能从 Python 扫参。
+        // `explorationParameter` 透传给它自己（不给就用引擎默认 3√2）；抽出来是为了能从 Python 扫参。
+        // ⚠️ 默认值必须**照抄引擎那条表达式** `3*sqrt(2)`：折成字面常量（差 1 ULP）就是换轨迹，
+        //    见 `.agent/MIGRATION.md` 里 24.0% → 31.5% 那次。
         SearchStats searchStats(BattleContext &bc, std::int64_t simulations,
-                                double explorationParameter =
-                                        search::BattleScumSearcher2::defaultExplorationParameter);
+                                double explorationParameter = 3 * std::sqrt(2));
 
-        // ── 动作 ↔ 统一下标（对齐 NN 策略输出与搜索树的 Action）──
-        std::vector<search::Action> enumerateActions(const BattleContext &bc);
-        int actionToIdx(const BattleContext &bc, const search::Action &action);  // 编不出来 = 抛
-        // 非法索引返回默认构造的 Action（bits == 0xFFFFFFFF，即 C++ 的非法哨兵）。
-        search::Action idxToAction(const BattleContext &bc, int idx);
-
-        // MCTS 展开一个节点：枚举合法动作，并为每个动作**克隆 + 执行**出一个孩子。
-        // 返回 `([(统一下标, Action), ...], [孩子 BattleContext, ...])`，两个列表同序；
-        // 下标与 `actionToIdx` 同口径（编不出来就抛）。供 MCTS 用：一批孩子在**一次**
-        // 跨语言调用里做完（原来是每个动作三次：clone / execute / action_to_idx）。
-        std::pair<std::vector<std::pair<int, search::Action>>,
-                  std::vector<std::unique_ptr<BattleContext>>>
-        expandChildren(const BattleContext &bc);
+        // ── 动作 ↔ 统一下标 ──
+        // 2026-10-12 起整层搬进 `sts::collect`（`collect/action.{h,cpp}`）：本目录的一切都在
+        // `sts::py` 里，而采集热循环在 `sts::collect` 里 ⇒ 放在这不免要跨命名空间 `using`。
+        // 段宽常量仍在这里（唯一一份，见上面的 `handStride` 那几行）。
 
 
 } // namespace py

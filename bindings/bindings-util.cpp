@@ -375,111 +375,6 @@ namespace sts::py {
         return out;
     }
 
-    std::vector<search::Action> enumerateActions(const BattleContext &bc) {
-        search::BattleScumSearcher2 searcher(bc);
-        searcher.enumerateActionsForNode(searcher.root, bc);
-        std::vector<search::Action> out;
-        out.reserve(searcher.root.edges.size());
-        for (const auto &e : searcher.root.edges) {
-            out.push_back(e.action);
-        }
-        return out;
-    }
-
-    // 编不出来就是编不出来 —— **不返回 -1**：Python 侧已经没有降级/丢弃路径，
-    // 而 -1 在 numpy 里是合法的末位下标（会静默污染标签）。
-    [[noreturn]] void unencodable(const char *why) {
-        throw std::runtime_error(std::string("动作无法编码进统一下标：") + why);
-    }
-
-    int actionToIdx(const BattleContext &bc, const search::Action &a) {
-        switch (a.getActionType()) {
-            case search::ActionType::CARD: {
-                const int hand = a.getSourceIdx();
-                if (hand < 0 || hand >= bc.cards.cardsInHand) { throw std::runtime_error("hand ID out of range"); }
-                const auto &c = bc.cards.hand[hand];
-                const int target = a.getTargetIdx();
-                const int t = c.requiresTarget() ? target + 1 : 0;   // monster 0..4 -> 1..5
-                if (t < 0 || t > maxMonsters) { unencodable("目标超出 5 只怪（目标字段只有 0..5）"); }
-                return hand * handStride + t;
-            }
-            case search::ActionType::POTION: {
-                const int slot = a.getSourceIdx();
-                if (slot < 0 || slot >= bc.potionCapacity) { unencodable("药水槽越界"); }
-                const auto p = bc.potions[slot];
-                if (p == Potion::INVALID || p == Potion::EMPTY_POTION_SLOT) { unencodable("药水槽是空的"); }
-                const int target = a.getTargetIdx();
-                int pt;
-                if (target > maxMonsters) {
-                    pt = potionStride - 1;                    // 丢弃（target > 5 时 targets[5] 是「用在自己身上」的槽）
-                } else if (potionRequiresTarget(p)) {
-                    pt = target + 1;                          // monster 0..4 -> 1..5
-                } else {
-                    pt = 0;                                   // no target needed
-                }
-                if (pt < 0 || pt > potionStride - 1) { unencodable("药水目标字段越界"); }
-                return potionBase + slot * potionStride + pt;
-            }
-            case search::ActionType::SINGLE_CARD_SELECT:
-                // CARD_SELECT 语境专用；下标 = 候选块第 k 槽（越界由调用方当场崩）。
-                return a.getSelectIdx();
-            case search::ActionType::END_TURN:
-                return endTurnIdx;
-            default:
-                unencodable("不认识的动作类型");
-        }
-    }
-
-    std::pair<std::vector<std::pair<int, search::Action>>,
-              std::vector<std::unique_ptr<BattleContext>>>
-    expandChildren(const BattleContext &bc) {
-        const auto actions = enumerateActions(bc);
-        std::pair<std::vector<std::pair<int, search::Action>>,
-                  std::vector<std::unique_ptr<BattleContext>>> out;
-        out.first.reserve(actions.size());
-        out.second.reserve(actions.size());
-        for (const auto &a : actions) {
-            // 克隆 + 执行，与 Python 侧原来的 `child = node.b.clone(); a.execute(child)` 同序
-            auto child = std::make_unique<BattleContext>(bc);
-            a.execute(*child);
-            out.first.emplace_back(actionToIdx(bc, a), a);
-            out.second.push_back(std::move(child));
-        }
-        return out;
-    }
-
-    search::Action idxToAction(const BattleContext &bc, int idx) {
-        if (bc.inputState == InputState::CARD_SELECT) {
-            if (idx < 0) { return {}; }
-            return search::Action(search::ActionType::SINGLE_CARD_SELECT, idx);
-        }
-        if (idx == endTurnIdx) { return search::Action(search::ActionType::END_TURN); }
-        if (idx < 0 || idx >= unifiedActionCount) { return {}; }
-        if (idx < potionBase) {
-            const int hand = idx / handStride;
-            const int t = idx % handStride;
-            if (hand >= bc.cards.cardsInHand) { return {}; }
-            const auto &c = bc.cards.hand[hand];
-            if (c.requiresTarget()) {
-                if (t == 0) { return {}; }                    // must target a monster
-                return search::Action(search::ActionType::CARD, hand, t - 1);
-            }
-            return search::Action(search::ActionType::CARD, hand);
-        }
-        const int pidx = idx - potionBase;
-        const int slot = pidx / potionStride;
-        const int pt = pidx % potionStride;
-        if (slot >= bc.potionCapacity) { return {}; }
-        const auto p = bc.potions[slot];
-        if (p == Potion::INVALID || p == Potion::EMPTY_POTION_SLOT) { return {}; }
-        if (pt == potionStride - 1) { return search::Action(search::ActionType::POTION, slot, 99); } // discard (>5)
-        if (potionRequiresTarget(p)) {
-            if (pt == 0) { return {}; }
-            return search::Action(search::ActionType::POTION, slot, pt - 1);
-        }
-        return search::Action(search::ActionType::POTION, slot);
-    }
-
     void selectCard(BattleContext &bc, int idx) {
         if (bc.inputState != InputState::CARD_SELECT) {
             return;
@@ -591,6 +486,13 @@ namespace sts::py {
             ret.push_back(cardFullView(c));
         }
         return ret;
+    }
+
+    // 与 `Actions::ShuffleDrawPile` 同型，但种子由调用方给（那条路吃 `bc.shuffleRng`，
+    // 无法在同一个状态上做多次独立洗牌）。
+    void shuffleDrawPile(BattleContext &bc, std::uint64_t seed) {
+        java::Collections::shuffle(bc.cards.drawPile.begin(), bc.cards.drawPile.end(),
+                                   java::Random(seed));
     }
 
     std::vector<std::vector<int>> getDiscardPile(const BattleContext &bc) {

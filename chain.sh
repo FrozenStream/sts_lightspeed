@@ -13,7 +13,7 @@ set -u
 WLOG="${1:?用法: chain.sh <等谁完成的日志> <py脚本> [args...]}"; shift
 (($#)) || { echo "[chain] 缺下一棒命令（py 脚本）" >&2; exit 2; }
 cd "$(dirname "$0")"
-PY="${STS_PY:-/root/miniconda3/bin/python}"
+PY=/root/miniconda3/bin/python
 BLOG="job-chain-$(basename "$1" .py).log"
 echo "[chain] 守望启动 $(date '+%F %T')：等 $WLOG ⇒ 然后 $PY -u $*（下一棒日志 $BLOG）" | tee -a chain.log
 # ⚠️ 陈旧日志防护：WLOG 可能是**上一条同名链**留下的、已带 COMMAND_EXIT_CODE=0 的旧文件

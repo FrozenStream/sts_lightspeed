@@ -1,47 +1,65 @@
 #!/usr/bin/env bash
-# 本地 → 远端（seetacloud）同步 + 作业控制。单向：本地是唯一真相来源。
+# 本地 → 远端（seetacloud）同步 + 作业控制。
 #
 #   ./sync.sh                  比较两端 md5（默认）
 #   ./sync.sh push [文件...]   推送受管文件（默认全部；规则见 managed()）
-#   ./sync.sh start <脚本.py> [参数...]   在远端 tmux 会话中启动（**脚本必填**；默认 train.py 已取消）
-#   ./sync.sh attach | kill               接入 / 终止会话（**STS_SESSION 必填**，默认 'sts' 已取消；**含作业进程树**）
+#   ./sync.sh start <脚本.py> [参数...]   在远端 tmux 会话中启动
+#   ./sync.sh attach | kill               接入 / 终止会话
 #   ./sync.sh status           会话、窗格、作业进程、最近 5 个日志
 #   ./sync.sh log [n]          最新日志尾部（默认 40 行）
-#   ./sync.sh wait <日志名> [间隔秒] [轮数]    **静默触发器**：只等完成标记，退出码/⛔ 即退，**不转发任何内容**
-#
-# 约束：
-#   1. 作业存活与进度只由远端 tmux + 日志决定，本地连接可断。
-#   2. 一作业一 `STS_BGLOG`；共用日志会被 `script(1)` 截断。
-#   3. 完成判据 = 日志尾部 `COMMAND_EXIT_CODE` 的**数值**（137 = SIGKILL，平台侧，见
-#      `.agent/memory/experiment-pitfalls.md`）。tmux 侧 `#{pane_dead_status}` 是第二证据；
-#      两者不一致要按异常处理。
-#   4. 守望循环每轮新建 ssh，读到退出码即 `break`；不得用 `exit`（会终止交互 shell）。
-#   5. 远端命令不得接管道：过滤器等 EOF 会永久阻塞。
-#   6. 所有 `STS_*` 自动转发，除 `LOCAL_ONLY`。
+#   ./sync.sh wait <日志名> [间隔秒] [轮数]    **静默触发器**：只等完成标记，退出码/⛔ 即退
 
 set -euo pipefail
 
-PORT="${STS_PORT:-48068}"
-HOST="${STS_HOST:-root@connect.westb.seetacloud.com}"
-RDIR="${STS_RDIR:-/root/autodl-tmp/sts_lightspeed}"
-PY="${STS_PY:-/root/miniconda3/bin/python}"     
+# 远端实例身份：换机器只改这一段。
+HOST=root@connect.westc.seetacloud.com
+PORT=22132
+DIR=/root/autodl-tmp/sts_lightspeed
+PY=/root/miniconda3/bin/python     
 # 远端作业的 worker 数（`runtime.workers()` 读 `STS_WORKERS`，见 `runtime.py`）。
 # **空 = 按远端 cgroup 配额自动**：本机的物理核数不该带到大机器上。
-WORKERS="${STS_WORKERS:-}"                      
-LOG="${STS_LOG:-$RDIR/run.log}"
-BLOG="${STS_BGLOG:-$RDIR/run.bg.log}"             # 单作业单日志
-SESS="${STS_SESSION:-}"                          # tmux 会话名：**无默认值**（2026-09-24 起 attach/kill/start 必填）
+WORKERS=16
+SESSION="${STS_SESSION:-}"
+LOG="$DIR/run.log"
+BLOG="$DIR/run.bg.log"
 
-LOCAL_ONLY="STS_HOST STS_PORT STS_RDIR STS_PY STS_LOG STS_BGLOG STS_WORKERS
-STS_SSH_TIMEOUT STS_SSH_RETRY STS_SESSION"        # 本地专用，不转发
+LOCAL_ONLY="STS_BGLOG STS_WORKERS STS_SESSION"        # 本地专用，不转发
 
-# ConnectTimeout 必设：缺它时断网会让 ssh 阻塞数分钟且不报错。
-_ALIVE=(-o ConnectTimeout="${STS_SSH_TIMEOUT:-10}" -o ServerAliveInterval=15 -o ServerAliveCountMax=3 -o TCPKeepAlive=yes)
-SSH=(ssh -o BatchMode=yes "${_ALIVE[@]}" -p "$PORT" "$HOST")
+# 会话名**无默认值**（2026-09-24 起）：attach / kill / start 缺 `STS_SESSION` 即响亮失败。
+# ⚠️ 别给默认值 `''`：`tmux -s ''` 会**成功**建一个空名会话，然后第二次启动报
+#    `duplicate session:`（冒号后是空的，看不出是谁），kill/attach 又都指不到 ⇒ 处处静默。
+_need_session() {
+  [[ -n "$SESSION" ]] && return 0
+  echo "❌ 必须显式指定 STS_SESSION（attach/kill/start 已取消默认会话名）" >&2
+  return 2
+}
+
+# ⚠️ **本脚本必须用 Git Bash 跑**（`C:\Program Files\Git\bin\bash.exe`），不要用 WSL 的 bash：
+#    `AppData\...\WindowsApps\bash.exe` 是 WSL 的入口 ⇒ 那台 Linux 虚拟机有**它自己的** `$HOME`
+#    （`/home/<user>`）与自己的 `ssh`/密钥 ⇒ `Permission denied (publickey)`，而同一台机器上
+#    Windows 的 `ssh.exe`（终端里那个）却是通的。同一份脚本、两个"本地"，症状极像远端挂了。
+# ⚠️ 私钥路径**显式给**，不靠 `$HOME`（Git Bash 的 `$HOME` = `C:\Users\<你>`，WSL 的不是）：
+#    换机器只改 `STS_SSH_KEY` 即可，不会出现"终端能连、脚本不能连"。
+KEY="${STS_SSH_KEY:-$HOME/.ssh/id_rsa}"
+if [ ! -f "$KEY" ] && [ -f "/c/Users/${USER:-$(whoami)}/.ssh/id_rsa" ]; then
+  KEY="/c/Users/${USER:-$(whoami)}/.ssh/id_rsa"
+fi
+[ -f "$KEY" ] || echo "sync.sh: ⚠️ 找不到私钥 '$KEY'（可用 STS_SSH_KEY 指定）" >&2
+
+# BatchMode 禁止所有需要用户交互的提示；一旦 SSH 需要你输入直接失败退出。
+# ConnectTimeout 建立 TCP连接的超时时间
+# ServerAliveInterval 连接建立后保活消息发送间隔
+# ServerAliveCountMax 如果连续x次保活消息都没收到服务器回应，就认为连接已断。
+_SETT=(-o BatchMode=yes
+        -o ConnectTimeout=10 
+        -o ServerAliveInterval=15
+        -o ServerAliveCountMax=3
+        -o TCPKeepAlive=yes)
+SSH=(ssh "${_SETT[@]}" -i "$KEY" -p "$PORT" "$HOST")
 
 # 读路径统一重试；写路径（push）不重试（幂等性由调用方保证）。
 _ssh_retry() {
-  local n="${STS_SSH_RETRY:-3}" i rc out
+  local n=3 i rc out
   for ((i = 1; i <= n; i++)); do
     if out="$("${SSH[@]}" "$@" 2>/dev/null)"; then printf '%s' "$out"; return 0
     else rc=$?; echo "ssh_retry: failed $i/$n :? $rc" >&2
@@ -61,14 +79,13 @@ _fwd() {
   printf '%s' "$o"
 }
 
-# 受管文件 = 根目录 .py/.sh/构建文件 + `.agent/**/*.md` + 四个自研 C++ 目录。
-# 排除：子模块（json/、pybind11/）、_old/、data/、build/、realtest/（真机测试，远端不需要）。
-# 规则化 ⇒ 新增脚本自动纳入；realtest/ 不在 find 路径里天然排除（临时要推就显式列文件）。
+# 受管文件 = 根目录 .py/.sh/构建文件 + `.agent/**/*.md` + C++ 目录。
+# 排除：子模块（json/、pybind11/）、_old/、data/、build/、realtest/。
 managed() {
   find . -maxdepth 1 -type f \( -name '*.py' -o -name '*.sh' -o -name 'CMakeLists.txt' \
        -o -name 'pyproject.toml' \) | sed 's|^\./||'
   find .agent -type f -name '*.md'
-  find bindings include src apps -type f \( -name '*.cpp' -o -name '*.h' \)
+  find bindings include src apps collect -type f \( -name '*.cpp' -o -name '*.h' \)
 }
 
 # --- check / push -------------------------------------------------------------
@@ -83,58 +100,39 @@ _fp_remote() {
   list="$(managed | sort | tr '\n' ' ')"
   [[ -n "$list" ]] || return 0
   # 仅哈希远端存在的文件：缺失时 md5sum 报错会与"连不上"混淆。
-  "${SSH[@]}" "cd '$RDIR' 2>/dev/null || exit 3
+  "${SSH[@]}" "cd '$DIR' 2>/dev/null || exit 3
     for f in $list; do [ -f \$f ] && md5sum \$f; done; true" | awk '{print $2, $1}' | sort
 }
 
-cmd_check() {
-  local l r
-  l="$(_fp_local)"
-  r="$(_fp_remote)" || { echo "[校验] ⚠️ 远端不可达或目录不存在：$HOST:$RDIR" >&2; return 1; }
-  if [[ "$l" == "$r" ]]; then echo "[校验] ✅ 两端一致（$(managed | wc -l) 个受管文件）"; return 0; fi
-  echo "[校验] ⚠️ 有漂移（本地为准 → ./sync.sh push）："
-  diff <(printf '%s\n' "$l") <(printf '%s\n' "$r") | grep '^[<>]' \
-    | sed -e 's/^< */  本地有  /' -e 's/^> */  远端有  /' || true
-  return 1
-}
 
 cmd_push() {
   local list=()
   if (($#)); then list=("$@"); else mapfile -t list < <(managed); fi
   ((${#list[@]})) || { echo "[推送] 没有可推送的文件" >&2; return 1; }
   printf '%s\n' "${list[@]}" | tar czf - -T - \
-    | "${SSH[@]}" "mkdir -p '$RDIR' && tar xzf - -C '$RDIR'"
-  echo "[推送] ${#list[@]} 个文件 → $HOST:$RDIR"
+    | "${SSH[@]}" "mkdir -p '$DIR' && tar xzf - -C '$DIR'"
+  echo "[推送] ${#list[@]} 个文件 → $HOST:$DIR"
 }
 
-# --- 守护式跑任务 -------------------------------------------------------------
-# 会话名无默认值（目标选择必须显式，禁静默兜底）：attach/kill/start 缺 STS_SESSION 即响亮失败。
-_need_session() {
-  [[ -n "${STS_SESSION:-}" ]] || {
-    echo "❌ 必须显式指定 STS_SESSION（attach/kill/start 已取消默认会话名 'sts'）" >&2
-    return 2
-  }
-}
 
 cmd_attach() {
   _need_session || return $?
-  exec ssh -tt -o BatchMode=yes "${_ALIVE[@]}" -p "$PORT" "$HOST" "tmux attach -t '$SESS'"
+  exec ssh -tt -o BatchMode=yes "${_SETT[@]}" -p "$PORT" "$HOST" "tmux attach -t '$SESSION'"
 }
-
 cmd_kill() {
   _need_session || return $?
   # ⚠️ 只 `tmux kill-session` 不会杀作业：`script`/python 子孙成孤儿继续跑（曾致双作业抢核）。
   #    所以先递归 TERM 整棵**进程树**，再（可选地）杀会话。
   local pane
-  pane="$("${SSH[@]}" "tmux list-panes -t '$SESS' -F '#{pane_pid}' 2>/dev/null | head -1")" || true
+  pane="$("${SSH[@]}" "tmux list-panes -t '$SESSION' -F '#{pane_pid}' 2>/dev/null | head -1")" || true
   if [[ -z "$pane" ]]; then
-    echo "[tmux] 没有会话 '$SESS'"; return 1
+    echo "[tmux] 没有会话 '$SESSION'"; return 1
   fi
   # 递归 TERM 整棵子孙树：pane → script → python → workers。
   "${SSH[@]}" "kt() { local p=\$1 c; for c in \$(pgrep -P \$p 2>/dev/null); do kt \$c; done; kill -TERM \$p 2>/dev/null; }; kt $pane; sleep 1" 2>/dev/null || true
   # 进程树倒下后窗格即结束，tmux **通常已自行收掉会话** ⇒ 这句失败是正常路径，不当错误。
-  "${SSH[@]}" "tmux kill-session -t '$SESS' 2>/dev/null" || true
-  echo "[tmux] 已终止会话 '$SESS'（含作业进程树）"
+  "${SSH[@]}" "tmux kill-session -t '$SESSION' 2>/dev/null" || true
+  echo "[tmux] 已终止会话 '$SESSION'（含作业进程树）"
 }
 
 cmd_start() {
@@ -155,26 +153,26 @@ cmd_start() {
   esac
   # 会话内套 `script -q -e -f`：`-f` 逐写落盘，`-e` 把退出码写入日志尾部。
   # `remain-on-exit on` 让窗格在命令退出后保留 ⇒ `#{pane_dead_status}` 可作退出码的第二证据。
-  "${SSH[@]}" "cd '$RDIR' && tmux new-session -d -s '$SESS' \"bash -lc \\\"STS_WORKERS='$WORKERS' STS_BGLOG='$BLOG'$(_fwd) \
-script -q -e -f -c '$runner $script $*' '$BLOG'\\\"\" && tmux set-option -t '$SESS' remain-on-exit on && tmux set-option -t '$SESS' mouse on" \
-    || { echo "[tmux] ⚠️ 启动失败：会话 '$SESS' 已存在？（先 ./sync.sh kill，或换 STS_SESSION）" >&2; return 1; }
-  echo "[tmux] 已在远端会话 '$SESS' 里启动：$script $*"
-  printf '%s\t%s\t%s\t%s\n' "$(date +%F_%T)" "$SESS" "$script $*" "$BLOG" >> "$0.sessions"
-  echo "        看进度：./sync.sh status   或   STS_SESSION='$SESS' ./sync.sh attach"
+  "${SSH[@]}" "cd '$DIR' && tmux new-session -d -s '$SESSION' \"bash -lc \\\"STS_WORKERS='$WORKERS' STS_BGLOG='$BLOG'$(_fwd) \
+script -q -e -f -c '$runner $script $*' '$BLOG'\\\"\" && tmux set-option -t '$SESSION' remain-on-exit on && tmux set-option -t '$SESSION' mouse on" \
+    || { echo "[tmux] ⚠️ 启动失败：会话 '$SESSION' 已存在？（先 ./sync.sh kill，或换 STS_SESSION）" >&2; return 1; }
+  echo "[tmux] 已在远端会话 '$SESSION' 里启动：$script $*"
+  printf '%s\t%s\t%s\t%s\n' "$(date +%F_%T)" "$SESSION" "$script $*" "$BLOG" >> "$0.sessions"
+  echo "        看进度：./sync.sh status   或   STS_SESSION='$SESSION' ./sync.sh attach"
 }
 
 # --- 看状态 -------------------------------------------------------------------
 # 返回最新 `run*.log` 的绝对路径。
 _newest_log() {
-  _ssh_retry "cd '$RDIR' 2>/dev/null || exit 0
-for f in run.log run.bg.log run.*.log; do [ -f \"\$f\" ] && stat -c '%Y $RDIR/%n' \"\$f\"; done \
+  _ssh_retry "cd '$DIR' 2>/dev/null || exit 0
+for f in run.log run.bg.log run.*.log; do [ -f \"\$f\" ] && stat -c '%Y $DIR/%n' \"\$f\"; done \
     | sort -rn | head -1 | cut -d' ' -f2-"
 }
 
 cmd_log() {
   local n="${1:-40}" lf
   lf="$(_newest_log)"
-  [[ -n "$lf" ]] || { echo "[作业] 还没有任何日志（$LOG / $BLOG 都不存在）"; return 0; }
+  [[ -n "$lf" ]] || { echo "[作业] 还没有任何日志（$DIR/run*.log 都不存在）"; return 0; }
   echo "[作业] 日志 = $lf"
   # 先 CR→LF 再 tail：进度条以 \r 原地刷新，直接读会把多次刷新粘成一行。
   "${SSH[@]}" "tail -n '$n' '$lf'" | tr '\r' '\n'
@@ -192,9 +190,9 @@ cmd_wait() {
   local logf="${1:?用法: wait <日志名> [间隔秒=15] [最大轮数=960]}"
   local every="${2:-15}" rounds="${3:-960}" i out head body chain size=0 code
   printf '[守望] %s:%s/%s —— 静默等待完成（仅触发回调；人要直播用 attach）\n' \
-         "$HOST" "$RDIR" "$logf"
+         "$HOST" "$DIR" "$logf"
   for ((i = 1; i <= rounds; i++)); do
-    if out="$(_ssh_retry "cd '$RDIR' 2>/dev/null || exit 0
+    if out="$(_ssh_retry "cd '$DIR' 2>/dev/null || exit 0
           stat -c %s '$logf' 2>/dev/null || echo 0
           tail -c +$((size + 1)) '$logf' 2>/dev/null || true
           printf '\n===CHAIN===\n'
@@ -228,7 +226,7 @@ cmd_wait() {
 # 输出：tmux 会话 / 窗格 / 作业进程 / 最近 5 个日志。
 # 约束：① 并行作业全部列出（不得只报最新一个）；② 结束判据取退出码数值。
 cmd_status() {
-  "${SSH[@]}" "cd '$RDIR' 2>/dev/null && {
+  "${SSH[@]}" "cd '$DIR' 2>/dev/null && {
 echo '=== tmux 会话 ==='
 tmux ls 2>/dev/null || echo '  （无）'
 echo
@@ -247,15 +245,18 @@ for f in \$(ls -t -- *.log 2>/dev/null | head -5); do
 done; }"
 }
 
-case "${1:-check}" in
-  check)  cmd_check ;;
+case "${1:-}" in
   push)   shift; cmd_push "$@" ;;
   start)  shift; cmd_start "$@" ;;
   attach) cmd_attach ;;
   kill)   cmd_kill ;;
   wait)   shift; cmd_wait "$@" ;;
-  status) shift; cmd_status ;;
   log)    shift; cmd_log "$@" ;;
+  status) shift; cmd_status ;;
   usage|help|-h|--help) sed -n '2,/^$/p' "$0" ;;
+  # 无参数 = 比较两端 md5（文档头第 4 行的默认行为；以前少了这一支 ⇒ 裸跑 `$1` unbound）。
+  '')
+    diff <(_fp_local) <(_fp_remote) || true
+    echo "[比对] 左侧 '<' 本地、右侧 '>' 远端；无输出 = 一致" ;;
   *)      echo "未知子命令: $1" >&2; sed -n '2,/^$/p' "$0"; exit 2 ;;
 esac

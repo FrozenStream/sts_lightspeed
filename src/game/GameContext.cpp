@@ -581,12 +581,6 @@ void GameContext::generateElites() {
 }
 
 void GameContext::generateBoss() {
-    static const MonsterEncounter bosses[3][3] = {
-            { ME::THE_GUARDIAN, ME::HEXAGHOST, ME::SLIME_BOSS },
-            { ME::AUTOMATON, ME::COLLECTOR, ME::CHAMP },
-            { ME::AWAKENED_ONE, ME::TIME_EATER, ME::DONU_AND_DECA },
-    };
-
     int indices[3] = {0,1,2};
 
     java::Collections::shuffle(indices, indices+3, java::Random(monsterRng.randomLong()));

@@ -1069,7 +1069,7 @@ Pylance 侧（两文件现已 **0 报错**）：
 
 | 文件 | 作用 |
 |---|---|
-| `aznet.py` | **唯一的网络定义**：快照布局常量 + `AZNet` + 动作/策略辅助（`teacher_action` / `net_action` / `random_action` / `mcts_action` / `mcts_search` / `legal_actions_and_idx`） |
+| `aznet.py` | **唯一的网络定义**：快照布局常量 + `AZNet` + 动作/策略辅助（`teacher_action` / `net_action` / `random_action` / `legal_actions_and_idx`；⚠️ `mcts_action` / `mcts_search` 2026-10-11 随 `azsearch.py` 一起删了 —— 搜索只剩 C++ 一份） |
 | `_az_train.py` | **唯一的训练脚本**：采集教师数据 → 训练 → 评估（`collect` / `train` / `eval` / `all`） |
 | `rlenv.py` | 整局环境层：地图遍历 + 房间处理 + `Episode`/`BattleEnv`/`RunEnv`/`RunEpisode` |
 | `_boss.py` | boss 测试床：按规格建卡组、建战斗、随机/教师基线（CLI: `deck` / `random` / `teacher` / `calibrate` / `sweep`） |
@@ -1084,6 +1084,9 @@ Pylance 侧（两文件现已 **0 报错**）：
 - 依赖关系：`_boss.py` → `aznet`；`_az_train.py` → `_boss` + `aznet`；`rlenv.py` → `aznet`。
 
 ### PUCT 搜索（`aznet.mcts_search` / `mcts_action`）
+> ⚠️ **2026-10-11 更新**：`azsearch.py` 及其守卫 `_chk_search.py` 已删，搜索只剩 C++ 一份
+> （`collect/selfplay.cpp`，即 `sts.selfplay` 的 K 棵树）。下面这段记的是**当年 Python 版**的做法，
+> 作为口径与教训留存 —— 结论仍然成立（argmax(visits) 不采样、clone 是开销大头）。
 - 网络引导的 AlphaZero 式搜索：规则用**网络策略头做先验**、**value 头做叶评估**，
   不做随机 roll-out（与 C++ 的 `BattleScumSearcher2` 不是一回事）。
 - 做法：`MCTSNode` 持有一个 `battle.clone()`；`select` 用 `Q + c_puct·P·√N/(1+child.N)`；
@@ -1187,11 +1190,17 @@ room = gc.cur_room          # ← 移动后的**实际**房间类型
   - ⚠️ 历史坑：曾把 `.pyd`/`.pyi` 挪到仓库根目录，而 CMake 仍输出到 `build/Debug/` → **重新编译不会更新运行时用的模块，且不报错**。不要再这样做。
 - `.pth` 里的相对路径相对 **site-packages 目录**解析（`makepath(sitedir, line)`）。
 
-## .pyi = 自动生成（2026-09-12 起；与模块同目录 = `build/Debug/slaythespire.pyi`）
-复核：`head -3 build/Debug/slaythespire.pyi`（生成版头部是 `pybind11 example plugin` + `from __future__ import annotations`）
+## .pyi = 自动生成（2026-09-12 起；2026-10-11 **包化**后与扩展同目录 = `build/Debug/slaythespire/_slaythespire.pyi`）
+复核：`head -3 build/Debug/slaythespire/_slaythespire.pyi`（生成版头部是 `pybind11 example plugin` + `from __future__ import annotations`）
 
-- **生成命令**：`.venv/Scripts/python.exe -m pybind11_stubgen slaythespire -o build/Debug`
+- **生成命令**：`.venv/Scripts/python.exe -m pybind11_stubgen slaythespire._slaythespire -o build/Debug`
   （已固化为 VS Code 任务 `sts: regen pyi` / 默认 build 任务 `sts: build + regen pyi`）
+- ⚠️ **包化之后（2026-10-11）**：`import slaythespire` 拿到的是**包**（`slaythespire/__init__.py` +
+  `__init__.pyi`），扩展本体在 `slaythespire/_slaythespire*.pyd`。之所以必须有这层：
+  `.pyd` 静态链接 libtorch，Windows 的加载器在 `PyInit_*` **之前**就解析完它的导入表 ⇒ 库自己
+  没机会登记 `torch/lib`，只能由宿主先 `import torch`（`/DELAYLOAD` 做不到：从 `c10.dll` 导入
+  **数据**符号，链接器直接拒）。⇒ 包把那句 `import torch` 吃掉，原先散在 **18 个脚本**里的
+  `import torch  # 必须早于 slaythespire` 全部删除。
 - **现在构建本身就会刷**：`CMakeLists.txt` 给 `slaythespire` 挂了 POST_BUILD 跑 stubgen
   （解释器取仓库 venv：Windows `.venv/Scripts/python.exe`、其它 `.venv/bin/python`；
   找不到就 `message(WARNING)`，不静默）。`cmake --build` 与 VS Code 的构建任务都覆盖这条。
@@ -1217,6 +1226,23 @@ room = gc.cur_room          # ← 移动后的**实际**房间类型
 
 - 另外 `def_readwrite` 生成的 setter 参数名恒为 `arg0` —— 这是 pybind11 的固有行为，无法命名，属可接受的噪声。
 - 暴露字段新 API 例子：GameContext.to_select_cards 只读属性返回 vector<Card>（复用 Card 类，不新增 SelectScreenCard 包装），list 下标==choose_select_card_screen_option(idx) 的 idx。
+
+## ⚠️ C++ **命名空间**：目录名 = 命名空间名（2026-10-11 定案）
+
+| 目录 | 命名空间 | 说明 |
+|---|---|---|
+| `collect/` | **`sts::collect`** | 快照 / 采集器 / 分片 IO / 场景构造（**16 个文件全在这**） |
+| `bindings/` | `sts::py` | `PYBIND11_MODULE` 宿主 + `.def` 胶水 + 动作语义（`actionToIdx` / `expandChildren` / `enumerateActions` / `TorchEvaluator`） |
+| `include/` `src/` | `sts`（引擎自己的） | 不碰 |
+
+- **跨目录引用一律全限定**（`sts::collect::X`）或显式 `using sts::collect::X;`。
+  ⚠️ **不要建别名**：在 `sts::py` 里写 `inline constexpr int maxMonsters = sts::collect::maxMonsters;`
+  会让同时 `using namespace sts::py` + `sts::collect` 的 TU 撞成 `reference to 'maxMonsters' is
+  ambiguous`（`apps/engine-test.cpp` 实测）。别名是这类错唯一的来源。
+- `collect/` 内部**已收平**：不再有嵌套的 `namespace py`（曾经的 `encs.h`），`Frame`/`Term`/`GameOut`
+  /`Snap`/`snapshotOf`/`EncJob`/`encJobs`/`representativeFloor` 全在 `sts::collect` 顶一层。
+- 消费者用的短名（`snapshotOf` / `Snap` / `buildBattle` / `selfplay` …）在 `apps/*` 里靠
+  `using namespace sts::collect;` 带进来；`bindings/slaythespire.{h,cpp}` 里写了**全限定名**。
 
 ## BattleContext 绑定（2026-09-12，C++ 语义）
 - `BattleContext` 构造与 C++ 完全一致：只有 `BattleContext()`(=default) 与 `BattleContext(const BattleContext&)`(拷贝构造)。
@@ -2708,7 +2734,8 @@ Python 侧**拿不到当前事件有几个选项**（`GameAction::getAllActionsI
 
     random              随机（默认）
     teacher:<sims>      C++ UCT 教师
-    net:<path>[:<sims>] AZNet；**省略 sims 或 sims=0 = 裸网络 argmax**，>0 = `mcts_action` 的 PUCT(sims)
+    net:<path>[:<sims>] AZNet；**省略 sims 或 sims=0 = 裸网络 argmax**，>0 = PUCT(sims)
+                        （2026-10-11 起走 **C++ 搜索**；装配点已从 `_walk.py` 挪到 `evalnet.py`）
 
 装配走 `_MP` 全局 + initializer：**只传可 picklable 的 spec（网络传**路径**，各进程自己 `torch.load`）**，
 因为闭包 / `net` 在 spawn 下不可 pickle（`_gen_eval` 传的是 state_dict，这里传路径，权重才 660 KB）。

@@ -13,7 +13,7 @@
 | 带走 | 说明 |
 |---|---|
 | `src/ include/ bindings/ apps/ CMakeLists.txt` | C++ 引擎与 pybind11 绑定 |
-| 根目录 `*.py` | `train.py` `aznet.py` `azsearch.py` `azlayout.py` `runtime.py` `collect_selfplay.py` 等 |
+| 根目录 `*.py` | `train.py` `aznet.py` `azlayout.py` `runtime.py` `collect_selfplay.py` 等（`azsearch.py` 2026-10-11 已删：搜索只留 C++ 一份） |
 | `pyproject.toml` `uv.lock` `.python-version` | 依赖与解释器版本（`requires-python >= 3.14`） |
 | `json/` `pybind11/` | **是 git submodule**。整目录拷贝即可；用 `git clone` 则必须 `--recursive` |
 | `.agent/` | 笔记 + 记忆导出（**最贵的东西，务必带走**） |
@@ -32,7 +32,7 @@
 ```bash
 uv sync                                     # 依赖（venv 内没有 pip，用 uv）
 cmake -S . -B build && cmake --build build --config Debug --target slaythespire
-python -m pybind11_stubgen slaythespire -o build/Debug   # 构建后再刷桩
+python -m pybind11_stubgen slaythespire._slaythespire -o build/Debug   # 构建后再刷桩
 python _chk_all.py                          # 守卫总检（engine 档，秒级）
 python _profile_state.py                    # 状态空间体检
 ```

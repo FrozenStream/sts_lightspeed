@@ -182,13 +182,17 @@ flowchart LR
 - ⚠️ 速查禁区：别给 `card_embed`/`potion_embed` 加 `padding_idx=0`（实测 train_ce 0.685→0.022
   / val_ce 0.96→1.89 = 从学策略变成背训练集）；两套行 0 约定别混（多热行 0 = padding）。
 
-### 2.4 搜索（`azsearch.py`）
+### 2.4 搜索（**C++ 一份实现**；`azsearch.py` 2026-10-11 已删）
 
 - **PUCT（AlphaZero 式）**：网络给先验 + 叶值，**不做随机 roll-out**；树模拟全走
   C++ `BattleContext.clone() + execute()`（确定性）。
-- `mcts_search(net, b, sims)` → `(idx→N, idx→Action)`；`mcts_action` = argmax 访问数。
-- batch 纪律：`batch=1` 与旧实现**逐位等价**；`batch=4` 加速 ~2.5×；**`batch=32` 胜率崩 −19pp**
-  （换 batch 必须先重测下游胜率）。`STS_MCTS_BATCH` 控制，`c_puct=1.5`。
+- 实现在 `collect/selfplay.cpp`（`collect/selfplay.h` 是接口）：一个调用 = K 棵树（`SelfplayConfig::games`
+  就是 K，即前向批宽），K=1 + 探索全关 = 从前 `mcts_search` / `mcts_action`（argmax 访问数）那个口径。
+- ⚠️ **Python 侧不再有第二份搜索**：守它的 `_chk_search.py` 一并删除 ⇒ 搜索的正确性由
+  `engine-test search`（net-free UCT 的固定读数）与 `_chk_selfplay --golden`（逐帧 golden）拦，
+  有意改搜索 = 显式重基线。
+- batch 纪律（历史结论，读时要带"C++ 之前的 Python MCTS"这个前提）：`batch=1` 与旧实现**逐位等价**；
+  `batch=4` 加速 ~2.5×；**`batch=32` 胜率崩 −19pp**（换 batch 必须先重测下游胜率）。`c_puct=1.5`。
 - 口径：搜索用本局真实未来抽牌（**作弊**）——搜索强度 ≠ 公平代理强度；引用数字必须带口径。
 - 实测梯度：MCTS 增益随预算上升不衰减（boss 场景、8000 标签、3 seeds × 200 局）：
   裸 28.2% → M20 34.5% → M100 36.8% → **M500 42.7%**。- **walk 线复现（2026-09-24，n=300，底网 dagger2）**：裸 89.9% → M100 92.2% →
@@ -356,8 +360,8 @@ M100 25% → **M200 46%** → M500 50%，M100 的靶太弱）⇒ 10k 局 ≈ 8�
 |---|---|
 | `azlayout.py` | 观测布局 → 下标/归一化/名义类别（纯数据层） |
 | `azaction.py` | 动作空间 + 编码守卫 + `teacher_action`/`net_action`/`random_action` |
-| `azsearch.py` | PUCT 搜索（`MCTSNode/mcts_search/mcts_action`） |
-| `aznet.py` | AZNet（trunk + 三头）+ 对以上三者的**全量重导出**（唯一入口） |
+| ~~`azsearch.py`~~ | **已删（2026-10-11）**：PUCT 搜索只剩 C++ 一份（`collect/selfplay.cpp`） |
+| `aznet.py` | AZNet（trunk + 三头）+ 对以上两者的**全量重导出**（唯一入口） |
 | `multi_hot.py` | 遗物多热池化（显式秩）/ 药水槽列表池化 |
 | `_az_train.py` | **唯一训练脚本**：collect / selfplay / train / eval / seeds |
 | `collect_walk.py` | 漫游采集（真实多怪；v4 资源口径） |
