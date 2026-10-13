@@ -9,7 +9,9 @@
 // 策略：
 //   · `random`            —— 合法动作里均匀取（基线，也是"这局面有多好打"的尺子）
 //   · `teacher:<sims>`    —— 引擎 UCT（`BattleScumSearcher2`），与教师采集同一份实现
-//   · `net:<path>:<sims>` —— 网络自己的 MCTS（`selfplay` 的 K=1 树，逐决策点一步）
+//   · `net:<path>[:<sims>]` —— 网络策略；**不给 `:sims`（= 0）= 裸网络**：逐决策点直接取网络
+//                             先验的 argmax（没有任何搜索遮挡）；给 `:sims` 才走它自己的 MCTS
+//                             （`selfplay` 的 K 棵树，那时 `sims` 必须 ≥ 2）。
 //
 // ⚠️ 配对的前提是**同一段 seed**：所有策略跑同一批 `(item, seed)`，所以两个策略的 `games` 相同
 //    时胜率可直接相减。`games` 不同（某项中途出错）时只比各自胜率，不再声称配对。

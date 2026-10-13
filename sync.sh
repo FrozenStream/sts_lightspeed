@@ -13,7 +13,7 @@ set -euo pipefail
 
 # 远端实例身份：换机器只改这一段。
 HOST=root@connect.westc.seetacloud.com
-PORT=22132
+PORT=38825
 DIR=/root/autodl-tmp/sts_lightspeed
 PY=/root/miniconda3/bin/python     
 # 远端作业的 worker 数（`runtime.workers()` 读 `STS_WORKERS`，见 `runtime.py`）。
@@ -86,6 +86,10 @@ managed() {
        -o -name 'pyproject.toml' \) | sed 's|^\./||'
   find .agent -type f -name '*.md'
   find bindings include src apps collect -type f \( -name '*.cpp' -o -name '*.h' \)
+  # ⚠️ 包的源码不是 .cpp/.h（`__init__.py` / `_slaythespire.pyi` 的模板）⇒ 上面那条抓不到；
+  #    而 CMake 的 `file(GENERATE ... INPUT ...)` **配置阶段就要读它们** ⇒ 漏推 = 配置阶段失败
+  #    （"Evaluation file ... cannot be read"，全新实例必踩）。
+  find bindings/slaythespire_pkg -type f
 }
 
 # --- check / push -------------------------------------------------------------
@@ -178,8 +182,8 @@ cmd_log() {
   "${SSH[@]}" "tail -n '$n' '$lf'" | tr '\r' '\n'
 }
 
-# 需要监控的作业入口；`watch` 也算作业。⚠️ 采集器是 `collect_<名字>.py`（encs/selfplay）。
-_JOBS_RE='[p]ython .*(collect_[a-z]+|train|eval_walk|watch)\.py'
+# 需要监控的作业入口；`watch` 也算作业。⚠️ 采集器是 `collect_<名字>.py`（teacher/selfplay）。
+_JOBS_RE='[p]ython .*(collect_[a-z]+|train|watch)\.py'
 
 # --- 完成触发器（**静默**：只等完成标记，不转发任何内容）-----------------------
 # ./sync.sh wait <日志名> [间隔秒=15] [最大轮数=960]

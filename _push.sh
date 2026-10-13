@@ -29,17 +29,6 @@ _SETT=(-o BatchMode=yes
         -o TCPKeepAlive=yes)
 SSH=(ssh "${_SETT[@]}" -p "$PORT" "$HOST")
 
-# 读路径统一重试；写路径（push）不重试（幂等性由调用方保证）。
-_ssh_retry() {
-  local n=3 i rc out
-  for ((i = 1; i <= n; i++)); do
-    if out="$("${SSH[@]}" "$@" 2>/dev/null)"; then printf '%s' "$out"; return 0
-    else rc=$?; echo "ssh_retry: failed $i/$n :? $rc" >&2
-    fi
-    ((i < n)) && sleep $((i * 2))
-  done
-  return $rc
-}
 
 # 受管文件 = 根目录 .py/.sh/构建文件 + `.agent/**/*.md` + C++ 目录。
 # 排除：子模块（json/、pybind11/）、_old/、data/、build/、realtest/。
@@ -50,17 +39,10 @@ managed() {
   find bindings include src apps -type f \( -name '*.cpp' -o -name '*.h' \)
 }
 
-cmd_push() {
-  local list=()
-  if (($#)); then list=("$@"); else mapfile -t list < <(managed); fi
-  ((${#list[@]})) || { echo "[推送] 没有可推送的文件" >&2; return 1; }
-  printf '%s\n' "${list[@]}" | tar czf - -T - \
-    | "${SSH[@]}" "mkdir -p '$DIR' && tar xzf - -C '$DIR'"
-  echo "[推送] ${#list[@]} 个文件 → $HOST:$DIR"
-}
+local list=()
 
-case "${1}" in
-  push)   shift; cmd_push "$@" ;;
-  usage|help|-h|--help) sed -n '2,/^$/p' "$0" ;;
-  *)      echo "未知子命令: $1" >&2; sed -n '2,/^$/p' "$0"; exit 2 ;;
-esac
+if (($#)); then list=("$@"); else mapfile -t list < <(managed); fi
+
+printf '%s\n' "${list[@]}" | tar czf - -T -  | "${SSH[@]}" "mkdir -p '$DIR' && tar xzf - -C '$DIR'"
+echo "[推送] ${#list[@]} 个文件 → $HOST:$DIR"
+

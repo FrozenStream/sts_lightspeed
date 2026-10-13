@@ -1,18 +1,13 @@
-"""网络 + 全量重导出 —— RL 侧的**唯一入口**。
+"""网络 + 全量重导出：RL 侧的唯一入口。
 
-    from aznet import AZNet, OBS_DIM, teacher_action, net_action
+    from aznet import AZNet, OBS_DIM
     net = AZNet(**CONFIG).eval()          # 评估前必须 eval（dropout）
-    a = net_action(net, b)
 
-实现按职责拆到三个模块，这里只做重导出（`from X import *` 同时满足导入方的扁平用法）：
+用途：网络本体（`FactorPolicyHead` / `FactorSelectHead` / `_ResBlock` / `AZNet`）在这里。
+原理：布局 / 动作空间常量分别在 `azlayout` / `azaction`，本文件 `from X import *`
+      全量重导出 ⇒ 导入方一律继续 `from aznet import ...`，表面与拆分前一致。
 
-    azlayout.py  观测布局 → 下标 / 归一化 / 名义类别        纯数据，无模型无搜索
-    azaction.py  动作空间 + 编码约定 + 策略函数
-    azsearch.py  PUCT 搜索（MCTSNode / mcts_search / mcts_action）
-    aznet.py     **本文件**：FactorPolicyHead / AZNet + 上面的重导出
-
-⚠️ 下划线开头的名字 `import *` **不带**，必须单独列出。
-⚠️ 导入方一律继续 `from aznet import ...`，**表面与拆分前一致**（连 `aznet.np` / `aznet.sts` 都在）。
+⚠️ 下划线开头的名字 `import *` 不带，必须单独 import。
 """
 import inspect
 import os
@@ -26,19 +21,23 @@ from azlayout import *                      # noqa: F401,F403
 from azlayout import (INPUT_STATE_CARD_SELECT, P_INPUT_STATE,  # noqa: F401
                       SELECT_REGION_IDX)
 # （下划线名 `import *` 不带，必须显式）
-from azsearch import *                      # noqa: F401,F403
 
 
 # ---------------------------------------------------------------- 网络
-# 战斗网的**建网超参**：五个嵌入宽度 + 初始化尺度。**本网自己一套** —— 整局网那份（`multi_hot`
-# 的 `RELIC_RANK`/`POTION_RANK`）已于 2026-10-06 随整局线退役，与本网无关。
-# ⚠️ 这五个宽度**直接决定 `in_dim`**（换值 = 作废旧权重）；`hidden` / `dropout` / `depth` 只改容量。
-# 这里是**唯一来源**：`AZNet` 签名默认值与 `net_cfg()` 都引用它们，别在别处再写这些数字。
-CARD_RANK, MONSTER_RANK, INTENT_MOVE_RANK = 8, 8, 8
-RELIC_RANK, POTION_RANK, INIT_STD = 8, 8, 0.02
+# 建网超参。唯一来源：`AZNet` 签名默认值与 `net_cfg()` 都引用它们，别在别处再写这些数字。
+# ⚠️ 五个嵌入宽度直接决定 `in_dim` ⇒ 换值 = 作废旧权重；`hidden` / `depth` / `dropout` 只改容量。
+# ⚠️ 建网超参不进权重名 ⇒ 换容量后新旧权重同名，`check_init` 拦得住续训、拦不住覆盖
+#    ⇒ 换容量必须同时给 `_chain.sh` 的 `LINEAGE`。
+# 嵌入宽度。⚠️ 它与 `hidden` 不是一回事：`hidden` 是“算力容量”，嵌入宽度是一个实体的“分辨率”。
+# 基数：牌 742 / 招式 197 / 怪 66 / 遗物 181 / 药水 44。8 维下 742 张牌几乎挤成一点，
+# 而策略头的 `k_hand` 只拿到 `CARD_RANK + HAND_EXTRA_N` 维就决定“打哪张牌”。
+# ⇒ 牌提到 32；招式/遗物基数 200 上下，8→16；怪/药水基数小，8→16 几乎免费。
+# ⚠️ 加宽会同时抬高嵌入向量的模长（∝ √rank）⇒ 进 `k_hand` 的尺度变大，必要时调 `INIT_STD`。
+CARD_RANK, MONSTER_RANK, INTENT_MOVE_RANK = 32, 16, 16
+RELIC_RANK, POTION_RANK, INIT_STD = 16, 16, 0.02
 
-# 容量 / 架构：同样只在这里定义（不是运行参数：无 CLI flag，也不进权重名；换值 = 换网）。
-HIDDEN, DEPTH, DROPOUT = 256, 3, 0.2
+# 容量 / 架构：无 CLI flag ⇒ 换值就是换网。
+HIDDEN, DEPTH, DROPOUT = 256, 4, 0.1
 ARCH, SEL_ARCH = "factor", "factor"
 
 
@@ -136,15 +135,35 @@ class FactorSelectHead(nn.Module):
         return self.out(torch.relu(query + key_cand)).squeeze(-1)                   # [B, SELECT_DIM]
 
 
+class _ResBlock(nn.Module):
+    """Pre-LN 残差块：`x + drop(proj(relu(ln(x))))`。
+
+    恒等路径上不夹 LN / dropout ⇒ 信号沿深度不衰减（原 `Linear -> ReLU -> Dropout` 每块 ×0.41）。
+    `proj` 零初始化 ⇒ 训练起点等价于「只有输入投影」，深度不在起点引入噪声。
+    """
+
+    def __init__(self, hidden, dropout):
+        super().__init__()
+        self.ln = nn.LayerNorm(hidden)
+        self.proj = nn.Linear(hidden, hidden)
+        self.drop = nn.Dropout(dropout)
+        nn.init.zeros_(self.proj.weight)
+        nn.init.zeros_(self.proj.bias)
+
+    def forward(self, x):
+        return x + self.drop(self.proj(torch.relu(self.ln(x))))
+
+
 class AZNet(nn.Module):
     """卡牌嵌入 + 数值特征 -> trunk -> {policy_head, select_head, value}。
 
-    形参见 `__init__` 开头的表；三个头的宽度一律引用 `POLICY_DIM` / `SELECT_DIM` / 1。
+    形参见 `__init__` 开头的注释；三个头的宽度一律引用 `POLICY_DIM` / `SELECT_DIM` / 1。
 
-    卡牌 id 的两种消费方式（见 `card_feats`）：
-      槽位（hand / select）—— 逐槽位嵌入（槽位号 == select_head 的动作下标）
-      牌堆 + 总牌组       —— **只给集合**：不传堆序（给序 = 读预言机信息），
-                             空槽排除在「和」与「分母」外后取均值；总牌组是 run 级不变量
+    卡牌 id 的消费方式：
+      手牌槽                      —— 逐槽 concat（槽位号 == 策略头的动作下标）
+      牌堆 ×3 / 总牌组 / 选牌候选 —— **只给集合**：不传序，掩码均值池化成 1 格。牌堆序
+                                    真机看不到（给序 = 读预言机信息）；候选的逐槽信息由
+                                    `select_keys` 直接喂给头，不进 trunk。
 
     ⚠️ 嵌入表**一律**「行 0 = 空槽、可学」：`card_embed` / `emb_monster_id` / `potion_embed`
     都不许加 `padding_idx=0`（空槽嵌入恒 0 ⇒ 从学策略变成背训练集）。遗物**没有表**（181 列多热
@@ -169,23 +188,18 @@ class AZNet(nn.Module):
                  relic_rank=RELIC_RANK, potion_rank=POTION_RANK,
                  init_std=INIT_STD):
         super().__init__()
-        # ── 形参 ──
-        # 五个嵌入宽度（默认值 = 上方的 `*_RANK` 常量）：card_rank / monster_rank /
-        #   intent_move_rank 是**逐槽 id** 的宽度，relic_rank / potion_rank 是多热表 / 槽表的秩
-        #   （potion_rank 还决定头的 `k_potion` 宽度，intent_move_rank 也进目标行）。
-        # 三个训练旋钮（都有 CLI flag，`train.CONFIG.update` 覆盖）：
-        # arch     flat = Linear(hidden, POLICY_DIM)  | factor = FactorPolicyHead（手牌槽 × 目标，
-        #          **含交叉矩阵**，常开）
-        # sel_arch flat = Linear(hidden, SELECT_DIM)  | factor = FactorSelectHead（候选集共享打分）
+        # 形参：五个嵌入宽度里前三个是逐槽 id 宽度、后两个是多热表 / 槽表的秩（`potion_rank` 还决定
+        # 头里 `k_potion` 的宽度，`intent_move_rank` 也进目标行）；`arch` / `sel_arch` 是结构性选择，
+        # `flat` = 单层 `Linear` 头，`factor` = 下面两个头类。
         assert arch in ("flat", "factor"), arch
         assert sel_arch in ("flat", "factor"), sel_arch
 
         self.arch, self.depth = arch, depth
         self.sel_arch = sel_arch
-        # ⚠️ 网络**不记**配置（2026-09-28 删掉了那条 `locals()` 拄法）：配置就是脚本里的
-        # `train.CONFIG`（+ CLI 覆盖），存盘时由 `train.save_ckpt` 直接写它。
-        # 别再引入「网络自己记一份」的机制 —— 两份会漂，而脚本里那份是人能直接读到的。
+        # ⚠️ 网络不记配置：配置 = 脚本里的 `train.CONFIG`（+ CLI 覆盖），存盘由 `save_ckpt` 写。
+        #    别再引入「网络自己记一份」—— 两份会漂。
 
+        # ── 嵌入表 ──
         self.card_embed = nn.Embedding(ENCODED_CARD_ID_TYPES, card_rank)
         nn.init.normal_(self.card_embed.weight, std=init_std)
 
@@ -195,7 +209,8 @@ class AZNet(nn.Module):
         self.relic_linear = nn.Linear(RELIC_TYPES, relic_rank, bias=False)
         nn.init.normal_(self.relic_linear.weight, std=init_std)
 
-        card_dim = card_rank * (len(HAND_CARD_IDX) + len(SEL_CARD_IDX) + len(PILE_CARD_IDX))
+        # 手牌逐槽；牌堆 ×3 + 总牌组 + 选牌候选 各池化成 1 格（见 `card_feats`）
+        card_dim = card_rank * (len(HAND_CARD_IDX) + len(PILE_CARD_IDX) + 1)
         scalar_dim = len(SCALAR_IDX)
         # ── 名义类别段：显式声明（哪几列走嵌入 / 哪几列走 one-hot）──
         # `monster_id` / `intent_move_id` 逐槽嵌入，**0 = 空槽 ⇒ 掩掉**（与牌堆池化同口径）；
@@ -221,12 +236,13 @@ class AZNet(nn.Module):
         relic_dim = self.relic_linear.out_features
         in_dim = scalar_dim + card_dim + cat_dim + potion_dim + relic_dim
 
-        layers: list[nn.Module] = []
-        for i in range(depth):
-            layers.append(nn.Linear(in_dim if i == 0 else hidden, hidden))
-            layers.append(nn.ReLU())
-            layers.append(nn.Dropout(dropout))
-        self.trunk = nn.Sequential(*layers)
+        # ── trunk + 三个头 ──
+        # 输入投影（`trunk[0]`：`in_dim -> hidden`；探针 `trunk[0].in_features` 依赖它）
+        proj = nn.Linear(in_dim, hidden)
+        nn.init.kaiming_normal_(proj.weight, nonlinearity="relu")
+        nn.init.zeros_(proj.bias)
+        # `depth` = 残差块数（输入投影不计入）
+        self.trunk = nn.Sequential(proj, *[_ResBlock(hidden, dropout) for _ in range(depth)])
         if arch == "flat":
             self.policy_head = nn.Linear(hidden, POLICY_DIM)
         else:
@@ -293,18 +309,18 @@ class AZNet(nn.Module):
         """obs: [B, OBS_DIM] -> [B, card_dim]"""
         # 一次 gather + 一次嵌入（分 5 次会各吃一遍 `nn.Module._call_impl` 的调度开销）。
         # 布局：手牌 | draw | discard | exhaust | 总牌组 | 候选 —— 与 `CARD_ID_IDX` 顺序一致。
-        ids = torch.index_select(obs, 1, self._idx_card_id).long()     # [B, 314]（手牌 10 + 3 堆 × 60 + 牌组 64 + 候选 60）
-        pe = self.card_embed(ids)                                   # [B, 314, E]
+        ids = torch.index_select(obs, 1, self._idx_card_id).long()     # [B, 618]
+        pe = self.card_embed(ids)                                   # [B, 618, E]
         base = len(HAND_CARD_IDX)
         parts = [pe[:, :base].flatten(1)]            # 手牌：逐槽 concat（槽位有语义）
-        for n in self._pile_lens:
-            # 每个牌堆**只给集合**：不给堆序（真机看不到序，给序 = 读预言机信息）；
-            # 空槽排除在「和」与「分母」外后取均值，分母 = **实际可见张数**（截断时不系统性缩小）。
-            blk = pe[:, base:base + n]                              # [B, pile_slots, E]
+        # 其余全是**集合**，每块池化成 1 格：牌堆序真机看不到（给序 = 读预言机信息）；
+        # 候选的槽号只是 select 头的动作下标，那份逐槽信息由 `select_keys` 直接喂给头。
+        # 空槽排除在「和」与「分母」外后取均值，分母 = **实际可见张数**（截断时不系统性缩小）。
+        for n in list(self._pile_lens) + [len(SEL_CARD_IDX)]:
+            blk = pe[:, base:base + n]                              # [B, slots, E]
             mask = (ids[:, base:base + n] > 0).unsqueeze(-1)
             parts.append((blk * mask).sum(dim=1) / mask.sum(dim=1).clamp(min=1))
             base += n
-        parts.append(pe[:, base:].flatten(1))                        # 候选
         return torch.cat(parts, dim=-1)
 
     def _gate_select_region(self, obs):
@@ -376,19 +392,39 @@ class AZNet(nn.Module):
 
 
 # ---------------------------------------------------------------- 推理前向
-def inference_net(net, intra_threads=1):
-    """推理用的前向 —— **就是 `net` 本身**，只把并行度落到 torch 线程数。
+class _Forward:
+    """前向适配层：numpy→张量、`to(device)`、**输出搬回 CPU**（搜索侧要立刻 `.numpy()`）。
 
-    ⚠️ 这里曾经把权重导成 ONNX 交给 ORT 跑（前向快：b=1 约 2×、b=8 约 1.34×）。2026-10-03 换回
-    torch：**探索阶段以语义简明优先** —— 少一套系统就少三类静默错：
-      ① 权重被烤进图里 ⇒ 每次换权重都得重新导出，且导出内容同时取决于权重**和** `aznet` 的代码；
-      ② 导出会把当时的 `train()` / `eval()` 模式**烘进图**（在 train 模式导出 ⇒ 推理静默带 dropout）；
-      ③ ORT 与 torch 的 kernel 与图融合不同（实测 ~3e-08 漂移）⇒ 两边采的数据**不可比**。
+    ⚠️ 每次调用有 H2D + D2H 两次同步 ⇒ 只对**大叶子批**划算；batch 8 的拓扑下它几乎一定比
+    同进程 CPU 前向更慢。
+    """
 
-    代价（实测，本地与远端比例一致）：整次搜索 b=1 **2×**、b=8 **1.34×**、b=32 1.08×。
+    __slots__ = ("_m", "_dev")
 
-    ⚠️ `intra_threads` **必须**落到 `torch.set_num_threads`：torch 默认吃满全核，而自对弈是 32 个
-    worker 并行 ⇒ 不设就是 32 倍超订（`rollout_threads` 这个配方参数就是它）。
+    # 类级声明：`__slots__` 不给 Pylance 类型 ⇒ 标出来，否则调用方 `._m.parameters()` 报错。
+    _m: torch.nn.Module
+
+    def __init__(self, m: torch.nn.Module, dev):
+        # ⚠️ 模块本体也要搬：只搬输入会让第一个参数与输入分居两地（`_gate_select_region` 里
+        # 拿 buffer 与 obs 做 `&` 时当场报 "found at least two devices"）。
+        self._m = m.to(dev)
+        self._dev = dev
+
+    def __call__(self, obs):
+        x = obs if isinstance(obs, torch.Tensor) else torch.as_tensor(obs)
+        out = self._m(x.to(self._dev))
+        return tuple(t.to("cpu") for t in out)
+
+
+def inference_net(net, intra_threads=1, device=None):
+    """推理用的前向：`device` 为空 = `net` 本身（就地 CPU 前向）；非空 = 搬上该设备的适配层。
+
+    ⚠️ `intra_threads` 必须落到 `torch.set_num_threads`：torch 默认吃满全核，而自对弈是 N 个
+    worker 并行 ⇒ 不设就是 N 倍超订（`rollout_threads` 就是它）。
+
+    ⚠️ `device` 非空时每次调用有 H2D + D2H 两次同步（见 `_Forward`）⇒ 只对**大叶子批**划算。
+    ⚠️ 自对弈整段在 C++（`collect/selfplay.cpp` 的 `NNEval` 攒批 + `sts.selfplay_run`）
+    ⇒ 生产路径既不建 `net` 也不连服务；这条只剩诊断/参照用途。
     """
     torch.set_num_threads(intra_threads)
-    return net
+    return net if device is None else _Forward(net, device)

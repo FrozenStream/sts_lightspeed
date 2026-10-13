@@ -1,22 +1,33 @@
 #include "eval.h"
 
 #include <algorithm>
+#include <cmath>
+#include <limits>
+#include <memory>
 #include <random>
 #include <stdexcept>
 #include <utility>
 
-#include "action.h"     // enumerateActions（random 策略）
+#include "action.h"     // enumerateActions / expandChildren（策略执行要枚举合法动作）
 #include "encs.h"       // encJobs（任务表：每个遭遇 × 它那个代表层）
 #include "scenebuild.h" // buildStaged / ascensionOf（造局面的唯一入口）
+#include "snapshot.h"   // snapshotObs / Snap（观测宽度）
 #include "teacher.h"    // TeacherConfig / teacherPlay（teacher 策略）
+#include "torch_eval.h" // TorchEvaluator（网络策略）
 
 #include <pybind11/stl.h>
+
+// ⚠️ `TorchEvaluator` 仍住在 `sts::py`（`bindings/torch_eval.h`）—— 与 `selfplay.cpp` 同。
+using sts::py::TorchEvaluator;
 
 namespace sts::collect
 {
 
     namespace
     {
+        // 观测宽度（编译期定死）—— 与 `selfplay.cpp` 那份同源（`Snap::snapshotLen`）。
+        constexpr int kObsLen = Snap::snapshotLen;
+
         /// "random" 策略打完**一场**（`start` 是造好的局面）。
         Outcome playRandom(const BattleContext &start, std::uint64_t seed, int max_steps)
         {
@@ -34,6 +45,74 @@ namespace sts::collect
                 pick.execute(b);
             }
             return b.outcome;
+        }
+
+        /// "net" 策略但是**不搜索**（"裸网络"）：逐决策点直接取网络的先验 argmax。
+        ///
+        /// 为什么单独一条路：`selfplay` 的契约是"搜得出一份可记的 π"（`sims ≥ 2`），而门控要的
+        /// 恰恰是**没有搜索遮挡**的那把尺子 ⇒ 直接前向 + 取候选里 logits 最大的动作。
+        /// ⚠️ 门控每轮要打几万场，单场一场前向（batch=1）光调用开销就够呛 ⇒ **K 局并肩推进**：
+        ///    每轮把"还没打完的那些局"的观测拼成一批，一次前向，各自走一步。
+        void playNetBatch(TorchEvaluator &ev, const std::vector<BattleContext> &starts,
+                          std::vector<Outcome> &out, int max_steps)
+        {
+            const std::size_t K = starts.size();
+            std::vector<BattleContext> bs = starts; // 本函数独占（调用方给的是拷贝）
+            std::vector<int> steps(K, 0);
+            std::vector<float> buf;
+            for (;;)
+            {
+                std::vector<std::size_t> live;
+                buf.clear();
+                for (std::size_t j = 0; j < K; ++j)
+                {
+                    if (bs[j].outcome != Outcome::UNDECIDED || steps[j] >= max_steps)
+                    {
+                        continue;
+                    }
+                    const auto o = snapshotObs(bs[j]);
+                    buf.insert(buf.end(), o.begin(), o.end());
+                    live.push_back(j);
+                }
+                if (live.empty())
+                {
+                    break; // 全打完了（或全到步数上限）
+                }
+                const auto fwd = ev.eval(buf.data(), static_cast<std::int64_t>(live.size()), kObsLen);
+                const float *pa = fwd[0].data_ptr<float>();
+                const float *ps = fwd[1].data_ptr<float>();
+                const auto da = static_cast<std::size_t>(ev.p_act_dim);
+                const auto ds = static_cast<std::size_t>(ev.p_sel_dim);
+                for (std::size_t i = 0; i < live.size(); ++i)
+                {
+                    BattleContext &b = bs[live[i]];
+                    const bool is_sel = b.inputState == InputState::CARD_SELECT;
+                    const float *logits = (is_sel ? ps + i * ds : pa + i * da);
+                    // 候选 = 合法动作（`expandChildren` 与搜索/采集同一份枚举）⇒ 只在候选里取最大。
+                    // softmax 对 logits 单调 ⇒ 取最大 logits 就等于取先验 argmax，不必真算分布。
+                    auto ex = expandChildren(b);
+                    if (ex.first.empty())
+                    {
+                        out[live[i]] = b.outcome;
+                        ++steps[live[i]];
+                        continue;
+                    }
+                    std::size_t best = 0;
+                    for (std::size_t c = 1; c < ex.first.size(); ++c)
+                    {
+                        if (logits[ex.first[c].first] > logits[ex.first[best].first])
+                        {
+                            best = c;
+                        }
+                    }
+                    ex.first[best].second.execute(b);
+                    ++steps[live[i]];
+                }
+            }
+            for (std::size_t j = 0; j < K; ++j)
+            {
+                out[j] = bs[j].outcome;
+            }
         }
 
         /// "net" 策略的配置（探索全关：门控比的是"当前策略强度"，不是"探索后的强度"）。
@@ -93,6 +172,16 @@ namespace sts::collect
             const EvalSpec &spec = specs[si];
             EvalSpecStats &st = out[si];
             const bool is_net = spec.kind == "net";
+            // 裸网络（`sims == 0`）：不起搜索，也不走 `selfplay`（那条路要求 `sims ≥ 2`）。
+            // 前向器**每个 spec 建一次**（加载 TorchScript 不便宜，别按块重建）。
+            const bool bare_net = is_net && spec.sims < 2;
+            std::unique_ptr<TorchEvaluator> bare_eval;
+            if (bare_net)
+            {
+                bare_eval = std::make_unique<TorchEvaluator>(spec.ts_path, spec.device, 1);
+                std::vector<float> probe(static_cast<std::size_t>(kObsLen), 0.0f);
+                bare_eval->eval(probe.data(), 1, kObsLen); // 头宽度 / 执行计划在首次前向后才有
+            }
             for (std::size_t at = 0; at < jobs.size(); at += width)
             {
                 const std::size_t n = std::min(width, jobs.size() - at);
@@ -105,6 +194,16 @@ namespace sts::collect
                     const EncJob &j = jobs[at + k];
                     battles.push_back(buildStaged(j.seed, j.enc, j.floor, ascensionOf(j.seed)).b);
                     seeds.push_back(j.seed);
+                }
+                if (bare_net)
+                {
+                    std::vector<Outcome> got(n);
+                    playNetBatch(*bare_eval, battles, got, max_steps);
+                    for (Outcome o : got)
+                    {
+                        tally(o, st);
+                    }
+                    continue;
                 }
                 if (is_net)
                 {

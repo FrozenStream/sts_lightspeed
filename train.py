@@ -1,10 +1,11 @@
-"""训练 AZNet。本文件只做训练：采集在 `collect_encs.py` / `collect_selfplay.py`，
-评估在 `eval_walk.py`（离线探针 `probe_imit.py` / `probe_capacity.py`）。
+"""训练 AZNet。本文件只做训练：采集在 `collect_teacher.py` / `collect_selfplay.py`（都在 C++ 里生产）。
 
 用法：
-  python train.py train <缓存路径> [epochs] [权重输出] [--lr 1e-3 …]
-  python train.py seeds <缓存路径> [种子数] [--seed0 3 --save 'data/n1_s{seed}.pt']
+  python train.py train <数据路径> [epochs] [权重输出] [--lr 1e-3 …]
+  python train.py seeds <数据路径> [种子数] [--seed0 3 --save 'data/n1_s{seed}.pt']
 （配方 flag 清单见 `python train.py train --help`）
+
+⚠️ `--pi-objective pg` 与"软目标"都从**同一份数据**现算（`collect.CollectData`），换口径不改数据。
 
 契约：
   · 策略目标用硬 argmax（`--soft-target` 只为复现旧结果保留；理由与数字见 `.agent/notes.md`）。
@@ -16,7 +17,8 @@
     转交 `train()`，名字对不上就当场 `TypeError`。
   · 线程数属于配方：换了线程数轨迹就变，A/B 两个方案必须同值。
   · 种子纪律：训练段、采集段、自对弈段都不得与评估段（从 `collect.EVAL_SEED0` = 1e8 起）重叠。
-  · 数据格式 = `collect.assemble` 写出的 npz 键集；自对弈数据同格式，可以直接混训。
+  · 数据格式 = `collect.CollectData` 认的采集产物（**分片目录**）。自对弈与教师数据同格式，
+    可以直接混训。
 """
 import argparse
 import inspect
@@ -34,9 +36,9 @@ from tqdm import tqdm
 import ckpt
 import metrics
 from aznet import AZNet, POLICY_DIM, net_cfg
-from collect import check_action_space, check_cache_obs
+from collect import CollectData
 from runtime import ckpt_name, mp_context, short_name
-from zspec import DEFAULT_SPEC, z_of
+from zspec import DEFAULT_SPEC
 
 # ---------------------------------------------------------------- 配方
 # 配方 flag 直接从 `train()` 的签名派生：名字、类型、默认值全读签名，不另抄一张表。
@@ -49,6 +51,8 @@ HELP: dict[str, str] = {
     "z_spec": "值口径：enginenorm / hp / hp_turn",
     "soft_target": "策略目标用软分布（默认硬 argmax）",
     "soft_temp": "软目标的温度：π**(1/T)，<1 更尖、>1 更平（仅 --soft-target 下生效）",
+    "pi_weight": "π 损失的逐行权重口径：none（默认，每行等权）/ advantage（max(0, z−V̂) 归一）",
+    "pi_objective": "策略损失口径：off（默认，模仿教师 π 的交叉熵）/ pg（策略梯度，只回传实际执行的动作）",
     "loss_chunk": "算指标的分块行数",
     "threads": "torch 线程数（属于配方，会改轨迹）",
     "device": "cpu / cuda[:k]",
@@ -56,6 +60,10 @@ HELP: dict[str, str] = {
     "record_dir": "读数根目录（默认 data/runs）",
     "init": "续训起点权重（`ckpt.save` 的存档）；不设 = 随机初始化",
 }
+# `pi_weight` 的合法口径：`none` = 每行等权（历史行为，逐位不变）；`advantage` = 优势加权。
+PI_WEIGHT_MODES: tuple[str, ...] = ("none", "advantage")
+# `pi_objective` 的合法口径：`off` = 模仿教师 π（历史行为）；`pg` = 策略梯度。
+PI_OBJECTIVE_MODES: tuple[str, ...] = ("off", "pg")
 # 子命令里不属于配方的名字：这些不进 `train()`。新增一个 flag 而忘了登记（或者名字拼错），
 # 都会在 `train(**kw)` 那一步当场 TypeError —— 就是要它炸。
 JOB_KEYS = frozenset({"mode", "cache", "pos_epochs", "out", "name", "job_timeout",
@@ -149,72 +157,20 @@ def save_ckpt(net: AZNet, path: str, *, cfg: dict[str, Any], z_spec: str,
 
 
 # ---------------------------------------------------------------- 训练
-def battle_split(bid: np.ndarray, val_frac: float = 0.2, seed: int = 0,
-                 group: np.ndarray | None = None) -> tuple[np.ndarray, np.ndarray]:
-    """按场划分留出集：同一场的所有状态共享一个 z，按样本切会把答案泄露到训练侧。
-
-    `group` 是行的分组键，同组必须分到同一侧。应当传 `data["seed"]`：`bid` 只是批次内下标，
-    教师数据和自对弈数据里同一个 seed 的 `bid` 相同，按 `bid` 分会把同一个开局的两种轨迹
-    分到两侧（同样泄露）。只有旧缓存没这个键时才退回用 `bid`。
-    """
-    g = bid if group is None else group
-    keys = np.unique(g)
-    rng = np.random.default_rng(seed)
-    rng.shuffle(keys)
-    n_val = max(1, int(round(len(keys) * val_frac)))
-    val_set = set(keys[:n_val].tolist())
-    return (np.array([k not in val_set for k in g]),
-            np.array([k in val_set for k in g]))
-
-
-def hard_target(p: np.ndarray) -> np.ndarray:
-    """访问分布转成硬 argmax 的 one-hot；全零的行保持全零。"""
-    out = np.zeros_like(p)
-    rows = p.sum(-1) > 0
-    out[rows, p[rows].argmax(-1)] = 1.0
-    return out
-
-
-def soft_target(p: np.ndarray, temp: float = 1.0) -> np.ndarray:
-    """访问分布转成软目标（逐行归一化）；全零的行保持全零。
-
-    比 `hard_target` 多保留 MCTS 对所有合法动作的相对排序。全零行（`pi_act` 的选牌行、
-    `pi_sel` 的非选牌行）在交叉熵里贡献 0。
-
-    `temp` 是温度：先算 `π**(1/temp)` 再归一化 —— <1 更尖（靠近硬目标）、>1 更平。
-    `temp=1` 就是原来的软目标（逐位不变）。
-    """
-    out = np.array(p, dtype=np.float32, copy=True)
-    if temp != 1.0:
-        np.power(out, 1.0 / temp, out=out)
-    s = out.sum(-1, keepdims=True)
-    nz = s[..., 0] > 0
-    out[nz] /= s[nz]
-    return out
-
-
-def targets(p: np.ndarray, soft: bool, temp: float = 1.0) -> np.ndarray:
-    """按软/硬口径生成策略目标（`temp` 只在软目标下生效）。"""
-    return soft_target(p, temp) if soft else hard_target(p)
-
-
-def z_values(data: dict[str, np.ndarray], z_spec: str) -> np.ndarray:
-    """按 `z_spec` 从终局列算值目标（`zspec.z_of`）"""
-    return z_of(data, z_spec).astype(np.float32)
-
-
-def train(data: dict[str, np.ndarray], seed: int = 0, val_frac: float = 0.2,
+def train(data: CollectData, seed: int = 0, val_frac: float = 0.2,
           verbose: bool = True, tag: str | None = None, *,
           init: str | None = None,
           lr: float = 1e-3, wd: float = 1e-4, epochs: int = 64, batch: int = 256,
           z_spec: str = DEFAULT_SPEC, soft_target: bool = False, soft_temp: float = 1.0,
+          pi_weight: str = "none",
+          pi_objective: str = "off",
           loss_chunk: int = 65536, threads: int = 1, device: str = "cpu",
           record: bool = True,
           record_dir: str | None = None) -> tuple[AZNet, dict[str, float]]:
     """训练一个网络，返回 `(net, metrics)`（`train_ce`/`val_ce`/`train_r2`/`val_r2`）。
 
     参数：
-      `data`     缓存 dict（`collect.assemble` 的键集）
+      `data`     `collect.CollectData`（采集产物 = 分片**目录**）
       `seed`     决定留出集划分与初始化；同数据同种子必然得到同一条轨迹
       `val_frac` 留出集比例（按场划分，同一场不会跨两侧）
       `verbose`  只控制台读数；进度条与 TensorBoard 打点不受它影响
@@ -233,6 +189,20 @@ def train(data: dict[str, np.ndarray], seed: int = 0, val_frac: float = 0.2,
                      `.agent/notes.md`）
       `soft_temp`  软目标的温度：先 `π**(1/T)` 再归一化，<1 更尖、>1 更平；只在
                     `soft_target=True` 时生效（T=1 就是原来的软目标）
+      `pi_weight`   **π 损失**（策略交叉熵）的逐行权重口径：`none` / `advantage`。
+                    `none` 每行等权（历史行为，逐位不变）；`advantage` 用
+                    `w = max(0, z − V̂.detach())` 加权、再除以权重均值
+                    ⇒ 只放大「结局比网络当前预期更好」的决策，**尺度与等权同量级**
+                    （不改等效学习率）。`z` = 值目标，`V̂` = 网络自己的值输出。
+                    ⚠️ 只作用于 **π 损失**；记录里的 `train_ce`/`val_ce` 仍是**等权**口径
+                    ⇒ 跨口径可比。
+      `pi_objective`  **策略损失口径**：`off`（默认）/ `pg`。
+                    `off` = 模仿：把 `π_θ` 往教师的 `π` 上拉（CE），上界 = 教师。
+                    `pg` = 策略梯度：只回传**实际执行**的那个动作，权重 = 优势 `z − V̂`（可正可负）。
+                    本质差别：优势为负时会**推离**该动作，而模仿只会照拄教师 argmax、
+                    无论那条线最后赢没赢 ⇒ 上界不再被教师钉死。
+                    `pg` **忽略** `pi_weight`；值头损失不变（它就是 baseline）。
+                    需要缓存列 `a_act`/`a_sel`（实际动作下标）⇒ 旧缓存要重采。
       `loss_chunk`  算指标时的分块行数（防显存爆，CPU/GPU 共用）
       `threads`  torch 线程数，属于配方：换了轨迹就变，A/B 两个方案必须同值
       `device`   `cpu` / `cuda[:k]`；数据集留在 host，每个 batch 再上卡
@@ -240,43 +210,40 @@ def train(data: dict[str, np.ndarray], seed: int = 0, val_frac: float = 0.2,
 
     返回的 `net` 已经 `.eval()` 且在 CPU 上（`save_ckpt`/`check_determinism` 都按 CPU 跑）。
     """
-    check_action_space(data, where="train()")
+    if pi_weight not in PI_WEIGHT_MODES:
+        raise ValueError(f"未知 --pi-weight {pi_weight!r}（可选：{' / '.join(PI_WEIGHT_MODES)}）")
+    if pi_objective not in PI_OBJECTIVE_MODES:
+        raise ValueError(f"未知 --pi-objective {pi_objective!r}（可选：{' / '.join(PI_OBJECTIVE_MODES)}）")
+    if pi_objective == "pg" and "a_act" not in data.cols:
+        raise ValueError(
+            f"`--pi-objective pg` 要 `a_act` 列（实际执行的动作），这份数据里没有（{data.path}）。"
+            f"自对弈在 `step < temp_moves` 时按 π **采样**，只知道分布 ⇒ 用新版采集重采。")
     torch.set_num_threads(threads)   # 必须固定，否则 GEMM 的归约顺序会变
     torch.manual_seed(seed)
     np.random.seed(seed)
 
     cfg = net_cfg()          # 建网配置（值固定在 `aznet.py`）：下面打印与建网都用它
-    obs = torch.as_tensor(data["obs"])
     if verbose:
         print(f"  策略目标 = {'软分布 π**(1/%g)' % soft_temp if soft_target else '硬 argmax one-hot'}"
               f"  (--soft-target={int(soft_target)}, --soft-temp={soft_temp:g})", flush=True)
         # 会影响轨迹的设置都要打印（值口径、语义开关、设备）；不打印的话两份日志对不上。
         print(f"  值目标口径 = {z_spec}  (--z-spec)", flush=True)
+        print(f"  π 损失权重 = {pi_weight}  (--pi-weight)", flush=True)
+        print(f"  策略损失口径 = {pi_objective}  (--pi-objective)", flush=True)
         print("  选牌区门控 = **无条件开启**（非 select 帧置 0）", flush=True)
         print("  整局资源 = **恒可见**（遗物 181 + 药水 count/capacity + 药水槽；"
               "`use_resources` 已删）", flush=True)
         print(f"  设备 = {device}  batch = {batch}  lr = {lr:g}  (--device/--batch/--lr)",
               flush=True)
         print(f"  建网 = {cfg}", flush=True)
-    P_act, P_sel = (torch.as_tensor(targets(data["pi_act"], soft_target, soft_temp)),
-                    torch.as_tensor(targets(data["pi_sel"], soft_target, soft_temp)))
-    M_act, M_sel = torch.as_tensor(data["m_act"]), torch.as_tensor(data["m_sel"])
-    V = torch.as_tensor(z_values(data, z_spec))
-    grp = data.get("seed")
-    if grp is None:
-        print("⚠️ 缓存没有 `seed` 键（旧格式）⇒ val 分割退回按 `bid`。"
-              "单源缓存无妨；**混源（教师+自对弈）下这是泄漏** —— 同一 seed 的行会落到"
-              "两侧。重跑 collect/selfplay 就会带上该键。", flush=True)
-    tr, va = battle_split(data["bid"], val_frac, seed, group=grp)
-    # 退化划分会让训练**静默为空**（0 步）：`battle_split` 按 `seed` 分组、每组整体归一侧，
-    # 所以 `seed` 只有一个取值时（例如每项只采 1 局）训练集必空 —— loss 全 0、权重不动，
-    # 账面看起来像"训了但没退步"。宁可当场报错。
+    tr, va = data.split(val_frac, seed)
+    # 退化划分会让训练**静默为空**（0 步）：`split` 按段分组、每段整体归一侧，而段只有
+    # （或几）个时必有一侧为空 —— loss 全 0、权重不动，账面看起来像"训了但没退步"。宁可当场报错。
     if not tr.any() or not va.any():
-        g_all = grp if grp is not None else data["bid"]
         raise RuntimeError(
             f"留出集划分退化：train {int(tr.sum())} 行 / val {int(va.sum())} 行，"
-            f"分组键 {'seed' if grp is not None else 'bid'} 只有 {np.unique(g_all).size} 个取值 "
-            "—— 每个取值整体归一侧，必有一侧为空。自对弈缓存请让每项采多局（N_PER ≥ 2）。")
+            f"段只有 {data.n_games} 个"
+            "—— 每段整体归一侧，必有一侧为空。自对弈数据请让每项采多局（N_PER ≥ 2）。")
     tr_t, va_t = torch.as_tensor(tr), torch.as_tensor(va)
 
     # 数据集留在 host、每个 batch 再上卡：比整批上卡快，显存也只占当前 batch。
@@ -306,19 +273,39 @@ def train(data: dict[str, np.ndarray], seed: int = 0, val_frac: float = 0.2,
                     for k, v in net.state_dict().items())
         return s / max(w_ref_n, 1)
 
+    # 逐层读数：全局范数 / 全局漂移会把「第 0 层不动、头猛动」平均掉。名字取自 `named_modules()`
+    # （与 state_dict 键同源）⇒ 换 trunk 结构这里不用改。
+    trunk_lins = [(n_.removeprefix("trunk."), m) for n_, m in net.named_modules()
+                  if n_.startswith("trunk.") and isinstance(m, torch.nn.Linear)]
+
+    def trunk_readings() -> dict[str, float]:
+        """trunk 每层的梯度 **RMS** 与权重漂移均值。每 epoch 一次（每 batch 记会灌满 JSONL）。
+
+        用逐元素 RMS 而不是范数：范数随该层参数个数放大（第 0 层 fan_in 大几倍）⇒ 跨层不可比。
+        """
+        out: dict[str, float] = {}
+        for i, m in trunk_lins:
+            g = torch.cat([p.grad.ravel() for p in m.parameters() if p.grad is not None])
+            out[f"trunk{i}/grad"] = float(torch.linalg.vector_norm(g) / g.numel() ** 0.5)
+            out[f"trunk{i}/dw"] = float(
+                (m.weight.detach() - w_ref[f"trunk.{i}.weight"]).abs().mean())
+        return out
+
     # 读数旁路：关掉时 `w=None`，下面 `metrics.*` 全是空操作。配方与曲线同目录，便于跨运行对比。
     w = metrics.writer(tag or "adhoc", sub=f"seed{seed}", on=record, out_dir=record_dir)
     metrics.recipe(w, dict(cfg, lr=lr, wd=wd, batch=batch, epochs=epochs, val_frac=val_frac,
                        z_spec=z_spec, soft_target=soft_target, soft_temp=soft_temp,
+                       pi_weight=pi_weight,
+                       pi_objective=pi_objective,
                        device=dev, seed=seed,
-                       threads=threads, rows=int(len(data["obs"]))))
+                       threads=threads, rows=data.n_rows))
 
     def losses(mask: torch.Tensor) -> tuple[float, float, float]:
         """算 CE / R²。先切 eval 再算、算完切回 train，否则 dropout 会让指标抖动。
 
-        按 `loss_chunk` 行分块前向：整个 split 一次前向会爆显存；`dev="cpu"` 时 `.to(dev)`
-        不做任何事，所以 CPU/GPU 共用这一段。分块的 GEMM 归约顺序与整批不同，末几位不能
-        逐位比较。
+        按 `loss_chunk` 行分块：每块**按需**取行（`data.batch`）⇒ 整个 split 不必常驻内存，
+        显存也只占一块；`dev="cpu"` 时 `.to(dev)` 不做任何事，CPU/GPU 共用这一段。
+        分块的 GEMM 归约顺序与整批不同，末几位不能逐位比较。
         """
         was_training = net.training
         net.eval()
@@ -326,9 +313,9 @@ def train(data: dict[str, np.ndarray], seed: int = 0, val_frac: float = 0.2,
             ii = torch.nonzero(mask).squeeze(1)
             tot_ce = tot_se = 0.0
             for s0 in range(0, len(ii), loss_chunk):
-                j = ii[s0:s0 + loss_chunk]
-                oj, paj, maj = obs[j].to(dev), P_act[j].to(dev), M_act[j].to(dev)
-                pselj, mselj, vj = P_sel[j].to(dev), M_sel[j].to(dev), V[j].to(dev)
+                b = data.batch(ii[s0:s0 + loss_chunk], soft_target, soft_temp)
+                oj, paj, maj = b["obs"].to(dev), b["pi_act"].to(dev), b["m_act"].to(dev)
+                pselj, mselj, vj = b["pi_sel"].to(dev), b["m_sel"].to(dev), b["z"].to(dev)
                 o_act, o_sel, v = net(oj)
                 ce = (-(paj * torch.log_softmax(o_act.masked_fill(~maj, -1e9), -1)).sum(-1)
                       - (pselj * torch.log_softmax(
@@ -337,7 +324,7 @@ def train(data: dict[str, np.ndarray], seed: int = 0, val_frac: float = 0.2,
                 tot_se += float((v - vj).pow(2).sum())
             n_row = max(len(ii), 1)
             ce, vm = tot_ce / n_row, tot_se / n_row
-            vv = float(V[mask].var())
+            vv = float(np.var(np.asarray(data.z(z_spec))[mask.numpy()]))
         if was_training:
             net.train()
         return ce, vm, 1.0 - vm / max(vv, 1e-12)
@@ -353,13 +340,43 @@ def train(data: dict[str, np.ndarray], seed: int = 0, val_frac: float = 0.2,
         perm = idx_tr[torch.randperm(n, device=idx_tr.device)]
         for s in range(0, n, batch):
             idx = perm[s:s + batch]
-            # 在 host 上按行取，再整批上卡；`dev="cpu"` 时 `.to(dev)` 不做任何事。
-            ob, pa, ma = obs[idx].to(dev), P_act[idx].to(dev), M_act[idx].to(dev)
-            psel, msel, vv = P_sel[idx].to(dev), M_sel[idx].to(dev), V[idx].to(dev)
+            # 逐批取行 + 逐批转换，再整批上卡；`dev="cpu"` 时 `.to(dev)` 不做任何事。
+            b = data.batch(idx, soft_target, soft_temp)
+            ob, pa, ma = b["obs"].to(dev), b["pi_act"].to(dev), b["m_act"].to(dev)
+            psel, msel, vv = b["pi_sel"].to(dev), b["m_sel"].to(dev), b["z"].to(dev)
             o_act, o_sel, v_hat = net(ob)
-            ce = (-(pa * torch.log_softmax(o_act.masked_fill(~ma, -1e9), -1)).sum(-1)
-                  - (psel * torch.log_softmax(o_sel.masked_fill(~msel, -1e9), -1)).sum(-1)
-                  ).mean()
+            ce_row = (-(pa * torch.log_softmax(o_act.masked_fill(~ma, -1e9), -1)).sum(-1)
+                      - (psel * torch.log_softmax(o_sel.masked_fill(~msel, -1e9), -1)).sum(-1))
+            if pi_objective == "pg":
+                # 策略梯度：只回传**实际执行**的那个动作，逐行权重 = 优势 `z − V̂`（可正可负）。
+                # 与模仿的本质差别：优势为负时它**推离**该动作；模仿只会照拄教师 argmax。
+                # ⚠️ 每行用**它自己空间**的头与掩码：选牌帧的 `m_act` 全 0，拿 act 头算会得到垃圾。
+                is_sel_row = ~ma.any(-1)
+                lp_a = torch.log_softmax(o_act.masked_fill(~ma, -1e9), -1)
+                lp_s = torch.log_softmax(o_sel.masked_fill(~msel, -1e9), -1)
+                # 索引按**输出张量的 device**上卡（不靠外部 `dev`）：网在 GPU 而缓存留 host 时，
+                # 靠外部变量很容易漏一次 `.to()`，而报错直到 `gather` 才出现（且只在 cuda 上）。
+                aa = b["a_act"].to(lp_a.device).clamp_min(0)
+                as_ = b["a_sel"].to(lp_s.device).clamp_min(0)
+                logp = torch.where(is_sel_row,
+                                   lp_s.gather(1, as_[:, None]).squeeze(1),
+                                   lp_a.gather(1, aa[:, None]).squeeze(1))
+                adv = vv - v_hat.detach()
+                # 标准化只改尺度、不改批内序；`hp` 口径下 adv 量级随数据漂，标准化后不挑 lr。
+                # ⚠️ 代价：批内均值被减掉后，**整批同一个 z** 时信号退化成 `-(V̂ - mean V̂)`
+                #    （只剩“比批内平均估值低的状态就推”）—— 同一场的行 z 相同，
+                #    批里若只装了一两场就会这样。真跑时看批内 z 的方差来发现。
+                adv = (adv - adv.mean()) / adv.std().clamp_min(1e-6)
+                ce = -(adv * logp).mean()
+            elif pi_weight == "advantage":
+                # 优势加权：`vv` 是值目标、`v_hat` 是网络自己的估值 ⇒ 只奖「比当前预期更好」的决策。
+                # 除以权重均值 ⇒ CE 的尺度与等权时同量级（不改等效学习率）。
+                w_row = (vv - v_hat.detach()).clamp_min(0.0)
+                sw = float(w_row.sum())
+                # 权重全零时退回等权——否则策略梯度会**静默**归零（loss 看着正常，参数不动）。
+                ce = (w_row * ce_row).sum() / sw if sw > 0.0 else ce_row.mean()
+            else:
+                ce = ce_row.mean()
             loss = ce + (v_hat - vv).pow(2).mean()
             # 发散必须当场报错：NaN/Inf 会一路带到存盘，而 `strict=True` 加载并不报错。
             lv = float(loss.detach())
@@ -387,7 +404,8 @@ def train(data: dict[str, np.ndarray], seed: int = 0, val_frac: float = 0.2,
                    f"先调小 --lr（当前 {lr:g}）")
             metrics.fault("param_nonfinite", msg, step=ep + 1)
             raise RuntimeError(msg)
-        metrics.scalars(w, ep + 1, **{"train/param_absmax": pmax, "train/dw": drift()})
+        metrics.scalars(w, ep + 1, **{"train/param_absmax": pmax, "train/dw": drift()},
+                        **trunk_readings())
         # 留出集指标的打点频率：每 run 至少 8 个点（否则短训练只能得到一个点、画不出趋势）。
         if (ep + 1) % max(1, epochs // 8) == 0 or ep + 1 == epochs:
             # `losses()` 的第二个返回值是 value 的 MSE（只在算 R² 时用得到），这里丢弃。
@@ -415,13 +433,13 @@ def train(data: dict[str, np.ndarray], seed: int = 0, val_frac: float = 0.2,
 
 
 # ---------------------------------------------------------------- 评估
-def check_determinism(net: AZNet, data: dict[str, np.ndarray], n: int = 32) -> bool:
+def check_determinism(net: AZNet, data: CollectData, n: int = 32) -> bool:
     """同一批输入连算两次必须完全一致，用来挡「返回的网络还停在 train 模式」（dropout 开着）。
 
     先查非有限值再比一致性：`NaN != NaN`，发散时也会返回 False，会被误报成「没切 eval」。
     """
     net.eval()
-    x = torch.as_tensor(data["obs"][:n])
+    x = data.batch(np.arange(min(n, data.n_rows)))["obs"]
     with torch.no_grad():
         a = net(x)
         b = net(x)
@@ -506,25 +524,18 @@ def build_parser() -> argparse.ArgumentParser:
         return sp
 
     # 未知子命令和未知 flag 都会在这里报错（退出码 2），不会悄悄当成别的任务跑。
-    add("train", "训练一个网络并存盘（评估在 `eval_walk.py`）",
+    add("train", "训练一个网络并存盘",
         ("cache", dict()), ("pos_epochs", dict(type=int, nargs="?", default=None)),
         ("out", dict(nargs="?", default=None)),
         ("--name", dict(default=None,
                         help="权重名里的自定义前缀：`<名字>-<数据引用>-<全部配方参数>.pt`")),
         with_epochs=False)
-    add("seeds", "多种子训练（并行；评估在 `eval_walk.py`）",
+    add("seeds", "多种子训练（并行）",
         ("cache", dict()), ("n_seeds", dict(type=int, nargs="?", default=3)),
         ("--seed0", dict(type=int, default=0, help="种子起点（续跑用）")),
         ("--save", dict(default=None, help="路径模板，用 {seed} 占位；不设则不存盘")),
         ("--mp-start", dict(default=None, help="multiprocessing 启动方式（fork/spawn）")))
     return p
-
-
-def load_cache(path: str) -> dict[str, np.ndarray]:
-    """读缓存的所有键；内容是否合法由调用方检查（`check_cache_obs` 与 `train()` 里的
-    `check_action_space`）。"""
-    z = np.load(path)
-    return {k: z[k] for k in z.files}
 
 
 def ckpt_params(kw: dict[str, Any]) -> dict[str, Any]:
@@ -566,8 +577,7 @@ def run_train(a: argparse.Namespace) -> None:
     if kw.get("init"):
         check_init(kw["init"], kw)
     out = a.out or ckpt_name(a.cache, kw["epochs"], name=a.name, **ckpt_params(kw))
-    data = load_cache(a.cache)
-    check_cache_obs(data, f"train {a.cache}")
+    data = CollectData(a.cache)
     net, m = train(data, tag=_stem(out), **kw)
     check_determinism(net, data)
     save_ckpt(net, out, cfg=net_cfg(),
@@ -585,27 +595,27 @@ def run_seeds(a: argparse.Namespace) -> None:
     # 这两项检查都放在读缓存之前：参数不对就不必先花几分钟读 GB 级的缓存。
     if n_seeds > 1 and mp_context(a.mp_start).get_start_method() != "fork":
         print(f"❌ `seeds` 的并行训练需要 fork（当前 {mp_context(a.mp_start).get_start_method()!r}）"
-              "—— 缓存靠写时复制共享，spawn 的子进程拿不到。请用 `--mp-start fork`"
-              "（POSIX）或把 n_seeds 设为 1。", flush=True)
+              "—— 数据靠 fork 后的模块全局 `_PAR_DATA` 交给子进程，spawn 的子进程拿不到。"
+              "请用 `--mp-start fork`（POSIX）或把 n_seeds 设为 1。", flush=True)
         sys.exit(2)
     if save_tpl and "{seed}" not in save_tpl and n_seeds > 1:
         print(f"❌ --save={save_tpl!r} 没有 {{seed}} 占位符，但 n_seeds={n_seeds} —— "
               f"会把 {n_seeds} 个网络互相覆盖。请写成 '..._s{{seed}}.pt'。", flush=True)
         sys.exit(2)
 
-    data = load_cache(a.cache)
-    check_cache_obs(data, f"seeds {a.cache}")
-    print(f"样本 {len(data['obs'])}  场 {len(np.unique(data['bid']))}  "
+    data = CollectData(a.cache)
+    print(f"样本 {data.n_rows}  段 {data.n_games}  "
           f"threads={kw['threads']}  device={kw['device']}  "
           f"batch={kw['batch']}  lr={kw['lr']:g}  wd={kw['wd']:g}  "
           f"epochs={kw['epochs']}  "
-          f"目标={'软分布' if kw['soft_target'] else '硬argmax'}  z口径={kw['z_spec']}")
+          f"目标={'软分布' if kw['soft_target'] else '硬argmax'}  z口径={kw['z_spec']}  "
+          f"π损失权重={kw['pi_weight']}  π口径={kw['pi_objective']}")
     print(f"  建网 {net_cfg()}（固定值，见 `aznet.py`）", flush=True)
     seeds_ = list(range(s0, s0 + n_seeds))
     if s0:
         print(f"种子起点 --seed0 {s0} → 跑 seed {s0}..{seeds_[-1]}", flush=True)
 
-    if n_seeds > 1:                     # 用 fork 让子进程共享数据（`_PAR_DATA` 就是为它存在的）
+    if n_seeds > 1:                     # 用 fork 把数据交给子进程（`_PAR_DATA` 就是为它存在的）
         print(f"训练阶段：{n_seeds} 个进程并行（各 {kw['threads']} 线程，"
               f"最多 {min(n_seeds, PAR_TRAIN)} 个）", flush=True)
         _PAR_DATA["data"] = data

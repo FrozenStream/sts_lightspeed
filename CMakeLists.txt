@@ -25,7 +25,7 @@ endif()
 add_subdirectory(json)
 add_subdirectory(pybind11)
 
-pybind11_add_module(slaythespire bindings/slaythespire.cpp collect/scenebuild.cpp collect/scenebuild_bind.cpp collect/action.cpp collect/encs_bind.cpp collect/zvalue.cpp collect/selfplay.cpp collect/teacher.cpp bindings/torch_eval.cpp bindings/bindings-util.cpp ${sts_lightspeed_SOURCES}
+pybind11_add_module(slaythespire bindings/slaythespire.cpp collect/scenebuild.cpp collect/scenebuild_bind.cpp collect/action.cpp collect/zvalue.cpp collect/selfplay.cpp collect/teacher.cpp collect/eval.cpp bindings/torch_eval.cpp bindings/bindings-util.cpp ${sts_lightspeed_SOURCES}
     collect/collect.h)
 
 # ⚠️ Windows：torch 的预编译库是 **release CRT（/MD）**，而 Debug 配置默认 /MDd ⇒ 跨边界传
@@ -70,13 +70,25 @@ file(GLOB _sts_stale_pyi "${CMAKE_BINARY_DIR}/slaythespire.pyi"
         "${CMAKE_BINARY_DIR}/*/slaythespire.pyi"
         "${CMAKE_BINARY_DIR}/slaythespire/slaythespire"
         "${CMAKE_BINARY_DIR}/*/slaythespire/slaythespire")
-file(REMOVE_RECURSE ${_sts_stale_pyi})
+# ⚠️ `file(REMOVE_RECURSE)` **没有实参**会当场报 "file must be called with at least two arguments"
+#    ⇒ 全新克隆（构建树里还没有任何旧 `.pyi`）必然配置失败。Empty GLOB = 本来就没事要干。
+if(_sts_stale_pyi)
+    file(REMOVE_RECURSE ${_sts_stale_pyi})
+endif()
 
 # .pyi
 if(WIN32)
     set(_STS_VENV_PY "${CMAKE_SOURCE_DIR}/.venv/Scripts/python.exe")
 else()
     set(_STS_VENV_PY "${CMAKE_SOURCE_DIR}/.venv/bin/python")
+endif()
+# `selfplay-test` 要 Python 头/库（torch 的头反过来要 `Python.h`）：本机 = 仓库 venv；
+# **远端（conda）没有 venv** ⇒ 用 `-DPython_EXECUTABLE=` 那个解释器（`find_package(Python)` 找到的）。
+# ⚠️ 只给 `selfplay-test` 用：刷桩那条命令在 `/bin/sh` 下引号很脆（`-c "…'…'…"` 会被 dash 截断），
+#    而且远端不需要 `.pyi` ⇒ 刷桩**仍旧只在有 venv 时做**（远端手工刷）。
+set(_STS_PY_HOST "${_STS_VENV_PY}")
+if(NOT EXISTS "${_STS_PY_HOST}" AND Python_EXECUTABLE)
+    set(_STS_PY_HOST "${Python_EXECUTABLE}")
 endif()
 
 # ── libtorch（**必选**）：用本地 Python 环境那份 torch 的 C++ 头/库（pip wheel 自带，不必另下）──
@@ -175,17 +187,18 @@ if(Torch_FOUND)
     target_include_directories(selfplay-test PRIVATE ${TORCH_INCLUDE_DIRS})
     # ⚠️ `torch/include/pybind11/conduit/wrap_include_python_h.h` 要 `Python.h` —— 那是 torch 的
     #    **传递依赖**（它自带 pybind11）。`slaythespire` 那侧由 `pybind11_add_module` 自动满足，
-    #    本目标不是 pybind 模块 ⇒ 手工把 venv 解释器的头目录加进来。
-    execute_process(COMMAND "${_STS_VENV_PY}" -c "import sysconfig;print(sysconfig.get_paths()['include'])"
+    #    本目标不是 pybind 模块 ⇒ 手工把本机解释器的头目录加进来（`_STS_VENV_PY` 见上面那段）。
+    execute_process(COMMAND "${_STS_PY_HOST}" -c "import sysconfig;print(sysconfig.get_paths()['include'])"
             OUTPUT_VARIABLE _STS_PY_INC OUTPUT_STRIP_TRAILING_WHITESPACE)
     if(EXISTS "${_STS_PY_INC}")
         target_include_directories(selfplay-test PRIVATE "${_STS_PY_INC}")
     else()
         message(WARNING "selfplay-test：找不到 Python 头目录（torch 的头要 Python.h）")
     endif()
-    # ⚠️ 还要**链** `python3xx.lib`：torch 的 `torch_python.lib` 依赖它，而本目标不是 pybind
-    #    模块（`pybind11_add_module` 会自动带上）。位置与头目录同一棵树：`<prefix>/libs`。
-    execute_process(COMMAND "${_STS_VENV_PY}" -c "import sysconfig;print(sysconfig.get_config_var('installed_base') or sysconfig.get_paths()['prefix'])"
+    # ⚠️ 还要**链** `python3xx.lib` / `libpython3xx.so`：torch 的 `torch_python` 依赖它，而本目标
+    #    不是 pybind 模块（`pybind11_add_module` 会自动带上）。位置与头目录同一棵树。
+    #    glibc 的 `libpython3.12.so` 在 `<prefix>/lib`；Windows 的 `python312.lib` 在 `<prefix>/libs`。
+    execute_process(COMMAND "${_STS_PY_HOST}" -c "import sysconfig;print(sysconfig.get_config_var('installed_base') or sysconfig.get_paths()['prefix'])"
             OUTPUT_VARIABLE _STS_PY_BASE OUTPUT_STRIP_TRAILING_WHITESPACE)
     file(GLOB _STS_PY_LIB "${_STS_PY_BASE}/libs/python3*.lib" "${_STS_PY_BASE}/lib/libpython3*")
     if(_STS_PY_LIB)

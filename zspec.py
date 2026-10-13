@@ -1,34 +1,25 @@
 """值目标 `z` 的**各种口径** —— 全仓唯一的定义点。
 
-为什么要单独一个模块：`z_revalue.py`（重放核对）与训练侧（`train.train`）都要用同一个
-`z_from`，而**两边谁都不该 import 对方** —— 放任何一边都会成环。这里只依赖 numpy。
+⚠️ **换口径 = 换任务**。默认 = `DEFAULT_SPEC`（`hp` = 胜则剩余血量比例、败则 −1）。
+`engine` / `lossshape` / `hpw` 三个口径已**删**（前两个是 `hp` 的手改变体、都被实验证否）。
 
-⚠️ **换口径 = 换任务**。默认 = `DEFAULT_SPEC`（`enginenorm` = 引擎 `evaluateEndState`
-除以 `100 * maxHp`）。`engine` / `lossshape` / `hpw` 三个口径已**删**（前两个是 `hp` 的
-手改变体、都被实验证否）。
-
-⚠️ 口径**只依赖终局列**（`Terminal` / `Z_COLS`），而**缓存不存 `z`** —— z 一律现算
-（`z_of` + `z_from`）。终局由缓存的 π 的 argmax 决定 ⇒ 换口径**既不必重采，
-也不必重放**。
+⚠️ 口径**只依赖终局列**（`Terminal` / `Z_COLS`）⇒ 换口径**既不必重采、也不必重放**：
+`collect.CollectData.z(spec)` 从数据的终局列现算，这里只定义"怎么算"。
 
 📌 `q = W/N` 的**尺度由值口径决定**，而 PUCT 的 `c_puct` 是针对那个尺度定的常数
-⇒ 换口径必须一起换。现在由 `Z_SCALE` / `c_puct_for(spec)` 保证，不再靠人记（`azsearch`
+⇒ 换口径必须一起换。现在由 `Z_SCALE` / `c_puct_for(spec)` 保证，不再靠人记（`aznet`
 的 `c_puct=None` 就走它）。
 """
 from typing import NamedTuple
-
-import glob
-import json
-import os
 
 import numpy as np
 
 
 class Terminal(NamedTuple):
-    """**一场**战斗的终局记录。字段名 == 缓存列名（`Z_COLS` 由它派生）—— 只有一份定义。
+    """**一场**战斗的终局记录：字段名 == 落盘列名、顺序 == 列序（双方唯一的契约，C++ 也指这里）。
 
-    类型按字段本义：计数 / HP / 回合是 `int`，比例与引擎分是 `float`（缓存列 dtype 同源，
-    见 `Z_DTYPES`）。**只有一种粒度**：一场一份；缓存里逐行存只是广播，不改变这一点。
+    类型按字段本义：计数 / HP / 回合是 `int`，比例与引擎分是 `float`。**只有一种粒度**：
+    一场一份；落盘里逐行存只是广播（`CollectData.seg` 正是靠"同一场逐行相同"认出场的）。
     """
     t_win: int          # 1 = 玩家胜
     t_hp: int           # 玩家剩余 HP
@@ -39,32 +30,6 @@ class Terminal(NamedTuple):
 
 
 Z_COLS = Terminal._fields
-
-# 终局列里的胜负列在**行**中的下标（行布局 = `("seed",) + Z_COLS`，与 `eval_encs.ROW_COLS` 同源）。
-I_T_WIN = ("seed",) + Z_COLS
-I_T_WIN = I_T_WIN.index("t_win")
-
-
-def baseline_win_rate(dir_: str = "data/baseline") -> tuple[str, float] | None:
-    """教师基准胜率 → `(策略标签, 胜率)`；取目录下最新一份 json（没有则 `None`）。
-
-    读的是门控同款 json（`items[*].per_spec[spec].rows`，行 = `("seed",) + Z_COLS`）
-    ⇒ 胜率 = `t_win` 的均值。放在本模块，是因为那条行布局只有这里有定义。
-    """
-    fs = sorted(glob.glob(os.path.join(dir_, "*.json")), key=os.path.getmtime)
-    if not fs:
-        return None
-    with open(fs[-1], encoding="utf-8") as fh:
-        d = json.load(fh)
-    if not isinstance(d, dict) or "items" not in d:      # 旧 walk schema
-        return None
-    spec = d["specs"][0]
-    rows = [r for it in d["items"] for r in it["per_spec"][spec]["rows"]]
-    return spec, sum(r[I_T_WIN] for r in rows) / max(len(rows), 1)
-
-# 缓存列的 dtype：从字段类型派生（`int` 字段不存成 float64）—— 改字段不会漏改这里。
-Z_DTYPES = {f: np.int64 if t is int else np.float64
-            for f, t in Terminal.__annotations__.items()}
 
 DEFAULT_SPEC = "hp"
 
@@ -85,6 +50,13 @@ Z_MID = {"enginenorm": 0.786, "hp": 0.0, "hp_turn": 0.0}
 C_PUCT_BASE = 1.5       # `c_puct` 的基准值
 C_PUCT_REF = 0.618      # 基准值是在这个 Q 尺度下定的（`hp` 口径）
 
+# 根节点 Dirichlet 噪声的**总浓度**（不是每动作的 α：α = 总浓度 / 合法动作数）。
+# 10.83 = AGZ 论文的 0.03 × 围棋的 ~361 个合法动作 —— 也就是说**它跟着动作数走**，
+# 换引擎（本引擎每帧合法动作 mean 4.7）必须重标定，别照抄。
+# ⚠️ 它原来是 `azsearch.py` 的模块常量；那个文件 2026-10-11 删掉（搜索只留 C++ 一份），
+#    搬到这里与 `c_puct` / `q_init` 同住 —— 三者都是"搜索旋钮 × 值口径"的常数。
+DIRICHLET_TOTAL = 10.83
+
 
 def c_puct_for(spec: str) -> float:
     """把 `C_PUCT_BASE` 折算到 `spec` 的 Q 尺度：使「等效探索强度」不随值口径漂。
@@ -104,35 +76,18 @@ def q_init_for(spec: str) -> float:
     return Z_MID[spec]
 
 
-def z_from(t: Terminal, spec: str) -> float:
-    """**一场**战斗的值目标。只读终局列。"""
-    win = t.t_win > 0
-    ratio = t.t_hp / max(1.0, t.t_max_hp)
-    if spec == "enginenorm":
-        return t.t_escore / (100.0 * max(1.0, t.t_max_hp))
-    if spec == "hp":
-        return ratio if win else -1.0
-    if spec == "hp_turn":
-        return (ratio - 0.000125 * t.t_turn) if win else -1.0
-    raise KeyError(f"unknown spec {spec!r}")
+def z_of(cols: dict[str, np.ndarray], spec: str) -> np.ndarray:
+    """值目标 `z`：`cols` = 终局列（`Z_COLS` 的名字 → 数组）。只读终局列。
 
-
-def z_of(d, spec: str) -> np.ndarray:
-    """整份缓存的值目标：**逐场算一次**，再按 `bid` 广播回逐行。
-
-    前提（`collect.assemble` 保证，不成立就当场报错，不当作默认）：`bid` 升序且每场
-    连续、终局列在同一场内逐行相同 —— 否则「取首行 + 广播」会静默算错。
+    元素级实现 ⇒ 传长度 1 的数组就是"一场"，传整列就是整份数据。`-1.0` 表示"没赢"。
     """
-    bid = np.asarray(d["bid"])
-    if bid.size and (np.diff(bid) < 0).any():
-        raise ValueError("bid 不是升序 ⇒ 逐行广播不成立（不是 assemble 拼出来的？）")
-    first = np.unique(bid, return_index=True)[1]          # 每场首行（bid 升序 ⇒ 已有序）
-    counts = np.bincount(bid)
-    for c in Z_COLS:
-        if c not in d:
-            raise KeyError(f"缓存缺终局列 {c!r} ⇒ 不是当前 schema（需要重采）")
-        v = np.asarray(d[c], dtype=np.float64)
-        if not np.array_equal(v, np.repeat(v[first], counts)):
-            raise ValueError(f"{c} 在同一场内不逐行相同 ⇒ 终局列不是按场复制的")
-    zs = [z_from(Terminal._make(d[c][i] for c in Z_COLS), spec) for i in first]
-    return np.repeat(zs, counts)
+    win = np.asarray(cols["t_win"]) > 0
+    max_hp = np.maximum(1.0, np.asarray(cols["t_max_hp"]))
+    ratio = np.asarray(cols["t_hp"]) / max_hp
+    if spec == "enginenorm":
+        return np.asarray(cols["t_escore"]) / (100.0 * max_hp)
+    if spec == "hp":
+        return np.where(win, ratio, -1.0)
+    if spec == "hp_turn":
+        return np.where(win, ratio - 0.000125 * np.asarray(cols["t_turn"]), -1.0)
+    raise KeyError(f"unknown spec {spec!r}")

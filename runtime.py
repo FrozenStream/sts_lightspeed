@@ -1,18 +1,20 @@
 """运行环境相关的**单一定义点** —— 迁移到别的机器时只需要看这一个文件。
 
-三件事收在这里：
+四件事收在这里：
   1. 数据缓存目录（以前默认写 `%TEMP%`，导致缓存**不在工作区里**，拷项目会丢数据）
   2. 并行 worker 数（本机 8 物理核调的默认值不该带到大机器上）
   3. multiprocessing 启动方式（POSIX 能用 `fork`，Windows 只能 `spawn`，差价 ~6 秒/次）
+  4. 缓存名拼装（`cache_name` / `cache_path` / `recipe_kv`）与**脚本 CLI**（`cli_for`）
 
 **这里没有旋钮**：下面全是纯函数，参数由调用方显式给（`workers(v)` / `mp_context(mp_start)` /
-`cache_path(name, cache_dir)` / …）。配方（架构/优化/口径/线程/设备/打点）是
+`cache_path(name, cache_dir)` / `cli_for(fn)` / …）。配方（架构/优化/口径/线程/设备/打点）是
 `train.train()` 的**形参**，由各脚本自己的 argparse 解析后一路传下去
 （见 `train.RECIPE_KEYS`）；别再往这里加 `STS_*` 读取点。
 
 ⚠️ **全仓唯一还读环境变量的地方** = `train._BGLOG`（`STS_BGLOG`，作业日志路径，由
 `sync.sh`/`chain.sh` 在启动时注入 —— 那不是配方，是作业环境）。
 """
+import argparse
 import inspect
 import multiprocessing as mp
 import os
@@ -46,29 +48,30 @@ def cache_path(name, cache_dir=None):
 
 
 def cache_name(name, kind, n, sims=None, **extra):
-    """数据文件名的**唯一**拼装点：`[<自定义名字>_]<kind>_n<N>_s<SIMS>_<k><v>...npz`。
+    """数据**目录名**的唯一拼装点：`[<自定义名字>_]<kind>_n<N>_s<SIMS>_<k><v>...`。
 
     `name` = 人给的名字（采集器 `--name`，如 `imit`），进名字最前面；不给就只剩 `<kind>_…`。
-    ⚠️ 为什么要收口（2026-09-25）：`data/` 里同时躺着 `walkdata_n800_s4000.npz`（无版本）、
-    `walkdata_v3_n800_s4000.npz`、`walkdata_v4_n10000_s4000.npz`、`_walkv5_n500.npz`
-    （前导下划线、版本在中间）—— **光看名字分不出哪个是现役**，而它们相差一个数量级算力。
+    ⚠️ 采集产物是**目录**（分片在里头，见 `collect_io.list_shards`），不是单个文件。
+    ⚠️ 为什么要收口（2026-09-25）：`data/` 里曾同时躺着 `walkdata_n800_s4000`（无版本）、
+    `walkdata_v3_n800_s4000`、`_walkv5_n500`（前导下划线、版本在中间）—— **光看名字分不出
+    哪个是现役**，而它们相差一个数量级算力。
     ⚠️ `extra` **不排序**（2026-10-02）：顺序 = 调用方给的顺序 = 配方签名顺序，名字读起来就是配方。
     """
     parts = ([name] if name else []) + [kind, f"n{n}"]
     if sims is not None:
         parts.append(f"s{sims}")
     parts += [f"{k}{_fmt_val(extra[k])}" for k in extra]
-    return "_".join(parts) + ".npz"
+    return "_".join(parts)
 
 
-def dataset_tag(npz_path) -> str:
+def dataset_tag(cache) -> str:
     """数据名进**别的**文件名时只留自定义部分：`_n<数字>` 之前的一切（`[<名字>_]<kind>`）。
 
     ⚠️ 抄全名会撞长度上限：实测自对弈那支（数据名 156 字符）嵌进权重名后到 **320 字符**，
     超 255 ⇒ 训练跑完、存盘那一步才 `ENAMETOOLONG`。名字本身就是一份完整配方，不必再抄一遍。
     没带名字时退化成 `<kind>`（旧名如 `encdata_sp_s500_sample` 无 `_n<数字>` ⇒ 原样返回）。
     """
-    stem = os.path.splitext(os.path.basename(npz_path))[0]
+    stem = os.path.splitext(os.path.basename(cache))[0]
     m = re.match(r"^(.*?)_n\d+", stem)
     return m.group(1) if m else stem
 
@@ -90,6 +93,59 @@ def recipe_kv(fn, kw, drop=()):
     —— 新增配方参数而忘了进名字 = 两种数据同名，那种错静默且代价高。
     """
     return {k: kw[k] for k, p in inspect.signature(fn).parameters.items() if k not in drop}
+
+
+def cli_for(fn, description=""):
+    """按 `fn` 的**签名**注册 `--flag` —— 签名是 flag 的**唯一来源**：
+
+    | flag 的哪一段 | 来自哪里 |
+    |---|---|
+    | `--<名字>` | 形参名（`_` → `-`） |
+    | 类型 | 注解（无注解、或注解是不可调用的联合时退回默认值的类型） |
+    | 默认值 / 是否必填 | 形参默认值（没有默认值 ⇒ `required=True`） |
+
+    用法（`main()` 里就这一句）：
+
+        kw = vars(cli_for(collect_part, "collect one item").parse_args())
+        collect_part(**kw)          # 名字对不上就让它自己 TypeError
+
+    ⇒ **没有第二张表**：加一个形参 = 自动多一个 flag（名字/类型/默认值一起长出来）。
+
+    ⚠️ **不做逐 flag 的 `help=`**：那种说明要么另开一张 `{参数名: 说明}` 的表（改名后静默变空
+    说明），要么贴在形参上（`Annotated[T, "…"]`）把签名撑成一堵墙 —— 而它要说的东西 docstring
+    里本来就有。`--help` 印的是：usage + `description` + flag 列表 + **本模块的 docstring**
+    （`epilog`，`Raw…` ⇒ 原样打印、不重排）⇒ **旋钮的说明写在模块 docstring 里**。
+    ⚠️ 注解要是**真的类型对象**（别用 `from __future__ import annotations`）：`type=` 得能调。
+    ⚠️ `bool` 走 `BooleanOptionalAction` ⇒ 生成 `--x` / `--no-x` 一对。**别**写 `type=bool`：
+    `bool("0")` 是 `True`，`--flag 0` 会静默变成打开。
+    """
+    p = argparse.ArgumentParser(
+        description=description, epilog=fn.__doc__,
+        formatter_class=argparse.RawDescriptionHelpFormatter)
+    for k, prm in inspect.signature(fn).parameters.items():
+        if prm.kind in (prm.VAR_POSITIONAL, prm.VAR_KEYWORD):
+            continue                      # `*args` / `**kw` 没有可命名的 flag
+        flag = "--" + k.replace("_", "-")
+        if prm.default is inspect.Parameter.empty:
+            # 必填 ⇒ 没有默认值可以借类型，注解必须真的可调用。
+            # ⚠️ 宽松兜底（退回 `str`）不行：`sims="8"` 会一路漏到函数体里才在 `sims < 2` 上炸，
+            #   而 `inspect.Parameter.empty` **是**一个可调用的类 ⇒ 不清查就会得到
+            #   `invalid _empty value` 这种看不懂的错。
+            if prm.annotation is inspect.Parameter.empty or not callable(prm.annotation):
+                raise TypeError(
+                    f"`cli_for({fn.__name__})`：必填形参 {k!r} 要写一个真的类型注解"
+                    f"（当前 {prm.annotation!r}）—— 否则 `{flag}` 收不到对的类型")
+            p.add_argument(flag, required=True, type=prm.annotation)
+        elif isinstance(prm.default, bool):
+            p.add_argument(flag, action=argparse.BooleanOptionalAction, default=prm.default)
+        else:
+            # `type=`：注解优先（`x: float = 0` 的默认值是 `int`，按 `type(default)` 写会拒收
+            # `0.5`）；无注解、或注解是不可调用的联合（`str | None`）⇒ 退回默认值的类型。
+            ann = prm.annotation
+            p.add_argument(flag, default=prm.default,
+                           type=ann if (ann is not inspect.Parameter.empty and callable(ann))
+                           else (str if prm.default is None else type(prm.default)))
+    return p
 
 
 def _fmt_val(v) -> str:
@@ -124,7 +180,7 @@ def short_name(path) -> str:
     return "-".join(parts[:cut + 1] + keep)
 
 
-def ckpt_name(npz_path, epochs=None, name=None, cache_dir=None, **extra):
+def ckpt_name(cache, epochs=None, name=None, cache_dir=None, **extra):
     """权重文件名 = `<自定义名字>-<数据引用>-<各项参数>.pt`（含目录）。
 
     段间用**连字符**：数据引用自己就用下划线（`imit_encdata`），两个分隔符不打架。
@@ -136,7 +192,7 @@ def ckpt_name(npz_path, epochs=None, name=None, cache_dir=None, **extra):
     ⚠️ 以前权重叫 `az_boss.pt` / `n1_s0.pt` —— 拿到权重**看不出**它是哪份数据、怎么训的，
     对不上就没法复现。名字里带数据引用 ⇒ 可反查；`--out` 只当逃生口。
     """
-    parts = [p for p in (name, dataset_tag(npz_path)) if p]
+    parts = [p for p in (name, dataset_tag(cache)) if p]
     if epochs is not None:
         parts.append(f"e{epochs}")
     parts += [f"{k}{_fmt_val(v)}" for k, v in extra.items()]

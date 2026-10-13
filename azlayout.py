@@ -219,9 +219,14 @@ CAT_SPEC = [
     ),
 ]
 CAT_IDX = [i for _n, idxs, _k in CAT_SPEC for i in idxs]
-# `CAT_IDX` 与 `SKIP_IDX` 一律**不进**标量段：前者由 `aznet` 的类别段显式消费，
-# 后者走查表（遗物池化 / 药水逐槽 id）。
-SCALAR_IDX = [i for i in range(OBS_DIM) if i not in (set(CARD_ID_IDX) | set(CAT_IDX) | SKIP_IDX)]
+# `CAT_IDX` / `SKIP_IDX` / `SEL_EXTRA_IDX` 一律**不进**标量段：
+#   `CAT_IDX` 由 `aznet` 的类别段显式消费；`SKIP_IDX` 走查表（遗物池化 / 药水逐槽 id）。
+# ⚠️ `SEL_EXTRA_IDX`（候选槽的 cost / costForTurn / specialData，384 列）**只由 `select_keys`
+#    逐槽消费** —— 那里才需要"槽 → 属性"的对应关系。整块拼进 trunk 等于给输入投影多 384 列
+#    **几乎恒 0** 的维度：非 `CARD_SELECT` 帧整槽填 0（`isValidSingleCardSelectAction` 先看
+#    `inputState`），实测元素非零 0.08%、恒定 298/384。
+SCALAR_IDX = [i for i in range(OBS_DIM)
+              if i not in (set(CARD_ID_IDX) | set(CAT_IDX) | SKIP_IDX | set(SEL_EXTRA_IDX))]
 
 # —————— 怪物块的「额外标量列」（与 `HAND_EXTRA_*` / `SEL_EXTRA_*` 同形）——————
 # 规则：块内**除名义列外**的列 —— **由 `CAT_IDX` 推出**（偏移 = `槽 × MONSTER_FIELDS + 字段号`
@@ -241,17 +246,3 @@ PLAYER_STATUS_IDX = list(range(PLAYER_STATUS_OFF, PLAYER_STATUS_OFF + PLAYER_STA
 MONSTER_STATUS_IDX = list(range(MONSTER_STATUS_OFF,
                                 MONSTER_STATUS_OFF + MONSTER_SLOTS * MONSTER_STATUS_LEN))
 
-# —————— 归一化 ——————
-# **不在 Python 侧**。除数是 C++ 快照生产者的事：`bindings/slaythespire.cpp` 的 `SnapWriter`
-# 要求每个数值列在赋值处写明除数（`s.push<100>(bc.player.curHp)`），而索引/名义列走
-# `push_index`（**没有除数参数**）。
-#
-# 为什么搬过去：旧的"按块列一张除数表、按位置对齐"在「块内字段数 ≠ 表长」时会**静默轮转**
-# —— `card_select` 的 `[1, 5, 999]` 对 4 个字段，`np.tile` 周期 3 ⇒ 逐槽轮换，`costForTurn`
-# 在一个槽除 999、下一个槽除 1，连 `cardId` 都被除过。写在赋值处则这类错位**写不出来**。
-#
-# 快照**只有一个出口**：`get_snapshot()` / `get_snapshot_np()` / `batch_snapshot()` 是同一份
-# **已归一化**的值 —— 它就是网络输入向量，**不再是引擎状态的忠实转储**。
-# 要读引擎真值走活对象访问器（`bc.player_hp` / `bc.monster_count` / `bc.monsters_alive` /
-# `bc.master_deck_size` / `bc.monsters[i].cur_hp` …），别拿归一化值反推。
-# 缓存里存的是归一化值 ⇒ **改除数就必须重采**（旧口径下缓存存原始值、改表可复用）。
