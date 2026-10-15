@@ -1,4 +1,5 @@
 /build/
+/build*/
 /files/
 /.idea/
 /.vscode/
@@ -6,6 +7,9 @@
 
 /data/
 *.npz
+
+# SSD 推理运行时（ONNX Runtime 官方包解在这里；本地下、`_push.sh` 不管、不进 git）
+/third_party/
 
 # ---- 运行/构建产物 ----
 __pycache__/
@@ -15,3 +19,5 @@ __pycache__/
 # 真机逆向工具产物（仅本地）
 _decomp/
 cfr.jar
+
+_*.sh
