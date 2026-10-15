@@ -40,8 +40,9 @@ namespace sts::collect
     // 一场战斗的终局读数：字段与 Python `zspec.Terminal` **同名同序**（缓存列由它派生）。
     struct Term
     {
-        std::int64_t t_win = 0, t_hp = 0, t_max_hp = 0, t_turn = 0;
-        double t_enemy = 0.0, t_escore = 0.0;
+        bool is_win = false;                                   // 玩家胜（`Outcome` 的 bool 投影）
+        std::int32_t cur_hp = 0, max_hp = 0, turn = 0;         // 玩家
+        std::int32_t enemy_cur_hp = 0, enemy_max_hp = 0;       // 敌方**全体求和**；占比由读侧现算
     };
 
     // 一场自对弈 / 教师对局的结果：整条决策序列 + 终局。
@@ -49,7 +50,7 @@ namespace sts::collect
     {
         std::vector<Frame> frames;
         Term term;
-        // 终局判定（`Term::t_win` 是它的 0/1 投影，丢掉"未决"这一档）。评估要区分"打输"与
+        // 终局判定（`Term::is_win` 是它的 bool 投影，丢掉"未决"这一档）。评估要区分"打输"与
         // "到步数上限还没分胜负" ⇒ 留原始 `Outcome`。
         Outcome outcome = Outcome::UNDECIDED;
     };
@@ -59,7 +60,7 @@ namespace sts::collect
     // ⚠️ 只**声明**在这儿：改动实现只重编 `selfplay.cpp` 一处（本头的其它消费者不受影响）。
     // 等第三个消费者出现再抽成自己的 `.cpp`。
 
-    // 终局读数（`t_win/t_hp/t_max_hp/t_turn/t_enemy/t_escore`；列名与 `zspec.Terminal` 同序）。
+    // 终局读数（`t_win/t_hp/t_max_hp/t_turn/t_enemy_cur_hp/t_enemy_max_hp/t_escore`；列名与 `zspec.Terminal` 同序）。
     Term readTerm(const BattleContext &b);
 
     // 该决策点的观测（`snapshotOf` 的原样输出，归一化在那边做）。

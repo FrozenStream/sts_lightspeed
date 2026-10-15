@@ -23,8 +23,6 @@
 #include <string>
 #include <vector>
 
-#include <pybind11/pybind11.h>
-
 #include "selfplay.h" // SelfplayConfig / selfplay（net 策略走它）
 
 namespace sts::collect
@@ -35,10 +33,10 @@ namespace sts::collect
     {
         std::string kind;
         std::string label;
-        std::string ts_path; // "net" 用（TorchScript 存档）
-        std::string device;  // "net" 用（空 = CPU）
-        std::string z_spec;  // "net" 用（终局价值口径，只为和采集同源）
-        int sims = 0;        // "teacher" / "net" 的搜索预算
+        std::string model_path; // "net" 用：网络存档（ONNX Runtime 认 `.onnx`，见 `net_eval.h`）
+        std::string device;     // "net" 用（空 = CPU）
+        std::string z_spec;     // "net" 用（终局价值口径，只为和采集同源）
+        int sims = 0;           // "teacher" / "net" 的搜索预算
     };
 
     struct EvalSpecStats
@@ -53,8 +51,6 @@ namespace sts::collect
     // 返回与 `specs` 同序的统计；`specs[i].label` 是它的名字。
     std::vector<EvalSpecStats> evalRun(const std::vector<EvalSpec> &specs, int n_per,
                                        std::uint64_t start_seed, int games, int max_steps);
-
-    void registerEval(pybind11::module_ &m);
 
 } // namespace sts::collect
 

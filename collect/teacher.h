@@ -5,8 +5,6 @@
 #include <string>
 #include <vector>
 
-#include <pybind11/pybind11.h>
-
 #include "collect.h" // Frame / Term / GameOut / readTerm / snapshotObs（采集侧通用）
 
 namespace sts::collect
@@ -44,8 +42,6 @@ std::vector<std::string> teacherRun(int n_per, const TeacherConfig &cfg, std::ui
 /// 用教师策略把**给定局面**打完（评估要"同一局面、不同策略"配对比较），只回终局判定。
 /// ⚠️ 与 `teacherRun` 逐决策点是**同一份实现**（同一个 UCT + 同一个取舍规则）。
 Outcome teacherPlay(const BattleContext &start, const TeacherConfig &cfg, std::uint64_t seed);
-
-void registerTeacher(pybind11::module_ &m);
 
 } // namespace sts::collect
 

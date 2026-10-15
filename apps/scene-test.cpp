@@ -4,8 +4,8 @@
 // 为什么是 C++ 而不是 `_chk_shape.py`：被测对象与 Python 训练侧**毫无关系**（纯引擎逻辑），
 // 写在 Python 里只是多一层 pybind 往返、多一层"忘了重编"的风险。照 KataGo 的分法
 // （`cpp/tests/test*.cpp` + `./katago runtests` / `runoutputtests`）：**纯 C++ 逻辑跟代码
-// 同语言、同构建**，只有参照物本身是 Python/TorchScript 的那几项（`_chk_selfplay`、
-// `_chk_teacher`）才留在 Python。
+// 同语言、同构建**，只有参照物本身是 Python 的那几项（曾对 `_chk_selfplay` / `_chk_teacher` 的
+// TorchScript trace）才留在 Python。
 //
 // 两类断言，分开对待：
 //   · **不变量**：自己就能判真假（幕分界 / 同 seed 复现 / 数值域 / 禁用件 / 趋势）⇒ `TEST_ASSERT`。

@@ -38,8 +38,9 @@
 #include "selfplay.h"
 #include "teacher.h"
 #include "eval.h"       // registerEval（配对评估触发器）
+#include "bind.h"       // registerSelfplay / registerEval / registerTeacher 的声明
 #include "zvalue.h"     // terminalValue
-#include "torch_eval.h" // 仍需要：selfplay/teacher 的 ts_path
+#include "net_eval.h"  // 推理后端的选择点（selfplay/eval 的 model 路径由它决定）
 
 using namespace sts;
 
@@ -114,13 +115,17 @@ using sts::collect::snapshotOf;
 
 // ⚠️ 模块名是 `_slaythespire`（**下划线开头**），而它住在一个同名的**包**里
 //    （`bindings/slaythespire_pkg/__init__.py`）；`import slaythespire` 拿到的是那个包。
-//    为什么绕这一层：`.pyd` 静态链接 libtorch，Windows 的加载器在 `PyInit_*` **之前**就解析完
-//    它的导入表 ⇒ 库自己没机会登记 DLL 搜索路径，只能由宿主先 `import torch`（见那个包的注释）。
+//    为什么绕这一层：那个包同时是"类型面"的落点（`_slaythespire.pyi` 由 stubgen 生成在包里），
+//    而包名 = 导入名是既有约定（历史原因见 `notes.md` §5-21：链 libtorch 时代必须先 `import torch`）。
 //    ⚠️ 这里改名后，`PyInit__slaythespire` 必须与文件名一致 ⇒ CMake 里 `OUTPUT_NAME _slaythespire`。
 PYBIND11_MODULE(_slaythespire, m)
 {
     m.doc() = "pybind11 example plugin"; // optional module docstring
 
+    // ── 推理后端（**只有一个**）──────────────────────────────────────
+    // 报给 Python 只为"挡旧扩展"：`netarchive.py` 校验它必须是 `onnx` —— 链 libtorch 的老
+    // `.pyd`/`.so` 会报 `torch`，于是采集侧当场拒绝起跑，而不是拿 `.onnx` 去喂 TorchScript。
+    m.attr("NET_BACKEND") = "onnx";
     // ⚠️ `terminalValue`（值口径）住在 `collect/zvalue.cpp`，**不经绑定出口**：
     // 自对弈/教师/评估都在 C++ 内直接读它，Python 只需要 `zspec.z_from`（同口径的列侧实现）。
 

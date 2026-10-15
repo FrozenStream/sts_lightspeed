@@ -1,5 +1,7 @@
 #include "eval.h"
 
+#include "bind.h" // `registerEval` 的声明（定义要签名对得上）
+
 #include <algorithm>
 #include <cmath>
 #include <limits>
@@ -13,12 +15,12 @@
 #include "scenebuild.h" // buildStaged / ascensionOf（造局面的唯一入口）
 #include "snapshot.h"   // snapshotObs / Snap（观测宽度）
 #include "teacher.h"    // TeacherConfig / teacherPlay（teacher 策略）
-#include "torch_eval.h" // TorchEvaluator（网络策略）
+#include "net_eval.h" // NetEvaluator（网络策略；唯一引擎 = ONNX Runtime）
 
 #include <pybind11/stl.h>
 
-// ⚠️ `TorchEvaluator` 仍住在 `sts::py`（`bindings/torch_eval.h`）—— 与 `selfplay.cpp` 同。
-using sts::py::TorchEvaluator;
+// ⚠️ `NetEvaluator` 仍住在 `sts::py`（`bindings/net_eval.h`）—— 与 `selfplay.cpp` 同。
+using sts::py::NetEvaluator;
 
 namespace sts::collect
 {
@@ -53,7 +55,7 @@ namespace sts::collect
         /// 恰恰是**没有搜索遮挡**的那把尺子 ⇒ 直接前向 + 取候选里 logits 最大的动作。
         /// ⚠️ 门控每轮要打几万场，单场一场前向（batch=1）光调用开销就够呛 ⇒ **K 局并肩推进**：
         ///    每轮把"还没打完的那些局"的观测拼成一批，一次前向，各自走一步。
-        void playNetBatch(TorchEvaluator &ev, const std::vector<BattleContext> &starts,
+        void playNetBatch(NetEvaluator &ev, const std::vector<BattleContext> &starts,
                           std::vector<Outcome> &out, int max_steps)
         {
             const std::size_t K = starts.size();
@@ -79,8 +81,8 @@ namespace sts::collect
                     break; // 全打完了（或全到步数上限）
                 }
                 const auto fwd = ev.eval(buf.data(), static_cast<std::int64_t>(live.size()), kObsLen);
-                const float *pa = fwd[0].data_ptr<float>();
-                const float *ps = fwd[1].data_ptr<float>();
+                const float *pa = fwd.pa;
+                const float *ps = fwd.ps;
                 const auto da = static_cast<std::size_t>(ev.p_act_dim);
                 const auto ds = static_cast<std::size_t>(ev.p_sel_dim);
                 for (std::size_t i = 0; i < live.size(); ++i)
@@ -119,7 +121,7 @@ namespace sts::collect
         SelfplayConfig netCfg(const EvalSpec &spec, int max_steps)
         {
             SelfplayConfig cfg;
-            cfg.ts_path = spec.ts_path;
+            cfg.model_path = spec.model_path;
             cfg.device = spec.device;
             cfg.z_spec = spec.z_spec;
             cfg.sims = spec.sims;
@@ -173,12 +175,12 @@ namespace sts::collect
             EvalSpecStats &st = out[si];
             const bool is_net = spec.kind == "net";
             // 裸网络（`sims == 0`）：不起搜索，也不走 `selfplay`（那条路要求 `sims ≥ 2`）。
-            // 前向器**每个 spec 建一次**（加载 TorchScript 不便宜，别按块重建）。
+            // 前向器**每个 spec 建一次**（加载一张 ONNX 图不便宜，别按块重建）。
             const bool bare_net = is_net && spec.sims < 2;
-            std::unique_ptr<TorchEvaluator> bare_eval;
+            std::unique_ptr<NetEvaluator> bare_eval;
             if (bare_net)
             {
-                bare_eval = std::make_unique<TorchEvaluator>(spec.ts_path, spec.device, 1);
+                bare_eval = std::make_unique<NetEvaluator>(spec.model_path, spec.device, 1);
                 std::vector<float> probe(static_cast<std::size_t>(kObsLen), 0.0f);
                 bare_eval->eval(probe.data(), 1, kObsLen); // 头宽度 / 执行计划在首次前向后才有
             }
@@ -211,7 +213,7 @@ namespace sts::collect
                     // 结果按场序回调 ⇒ 只收终局判定（评估不需要那些行）。
                     std::vector<Outcome> got(n);
                     SelfplayConfig cfg = netCfg(spec, max_steps);
-                    cfg.games = static_cast<int>(n);
+                    cfg.pool = static_cast<int>(n); // 池宽 = 本轮并肩的局数（`selfplay` 用局数当池宽：一次全开）
                     selfplay(battles, seeds, cfg,
                              [&](std::size_t j, GameOut &&g)
                              { got[j] = g.outcome; });
@@ -253,7 +255,7 @@ namespace sts::collect
             .def(py::init<>())
             .def_readwrite("kind", &EvalSpec::kind)
             .def_readwrite("label", &EvalSpec::label)
-            .def_readwrite("ts_path", &EvalSpec::ts_path)
+            .def_readwrite("model_path", &EvalSpec::model_path)
             .def_readwrite("device", &EvalSpec::device)
             .def_readwrite("z_spec", &EvalSpec::z_spec)
             .def_readwrite("sims", &EvalSpec::sims);

@@ -7,8 +7,8 @@
 //   · `snapshot`：快照的列**真的写着**引擎的那个值（布局本身不做断言，见下）；
 //   · `revive`：`targetable` 与**意图**把「永久尸体」和「待复活」分开、两条判胜边界。
 //   · `search`：**net-free UCT**（教师用的那个）在固定局面上的读数 —— 冻 golden（见本节注释）。
-// 参照物在 Python/TorchScript 的那些（对 `azaction.teacher_action`、`zspec`、torch 网、
-// npz 缓存）**留在 Python** —— 搬进来只会退化成"自己跟自己比"。
+// 参照物在 Python 的那些（对 `azaction.teacher_action`、`zspec`、网络、npz 缓存）**留在 Python** ——
+// 搬进来只会退化成"自己跟自己比"。
 // ⚠️ 搜索是**例外**：Python 侧那份实现（`azsearch.py`）2026-10-11 已删，这里改成 KataGo 式的
 // **冻 golden**（`engine-test search` 与 `_chk_selfplay --golden`），代价是改搜索要显式重基线。
 //

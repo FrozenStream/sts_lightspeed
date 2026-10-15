@@ -1,5 +1,7 @@
 #include "teacher.h"
 
+#include "bind.h" // `registerTeacher` 的声明（定义要签名对得上）
+
 #include <algorithm>
 #include <atomic>
 #include <chrono>
@@ -19,7 +21,7 @@
 #include "action.h"     // 动作层（枚举 / 编码 / 反解；`sts::collect`）
 #include "encs.h"       // 任务表（引擎派生）
 #include "scenebuild.h" // buildBattle / ascensionOf
-#include "shardio.h"    // ShardWriter / shardAddColumns / kPolicyDim / kSelectDim
+#include "shardio.h"    // ShardWriter / kPolicyDim / kSelectDim
 #include "snapshot.h"   // snapshotObs（`Frame::obs` 的填充）
 
 #include "sim/search/BattleScumSearcher2.h"
@@ -246,7 +248,6 @@ namespace sts::collect
         fs::create_directories(out_dir, ec);
 
         ShardWriter w;
-        shardAddColumns(w, "teacher");
         std::vector<std::string> written;
         int part = 0;
         char pathbuf[512];

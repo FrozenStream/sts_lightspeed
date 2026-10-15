@@ -36,22 +36,21 @@ class CollectData:
         self.shards = ShardSet(paths)
         s = self.shards
         self.n_rows, self.obs_dim = s.n_rows, s.obs_dim
-        self.space, self.task, self.src = s.space, s.task, s.src
-        self.cols = sorted(s.cols)          # 列名（`space` 那些标量在分片头里，不是列）
+        self.space = s.space
+        self.cols = sorted(s.cols)          # 列名（别的都是能派生的，不存）
         self.check()
 
     def check(self) -> None:
-        """列清单 + obs 宽 + 动作空间标记，不对当场报错。全在分片头里 ⇒ 不读数据。"""
+        """列清单 + obs 宽 + 动作空间标记，不对当场报错。全在分片头/列目录里 ⇒ 不读数据。"""
         from aznet import OBS_DIM, POLICY_DIM
 
         miss = [c for c in REQUIRED if c not in self.cols]
         if miss:
             raise ValueError(f"{self.path}: 缺列 {miss}（有 {self.cols}）")
-        width = self.shards.cols["obs"].width
-        if self.obs_dim != OBS_DIM or width != OBS_DIM:
-            raise ValueError(f"{self.path}: obs_dim={self.obs_dim} / obs 宽 {width}，当前 {OBS_DIM}")
+        if self.obs_dim != OBS_DIM:
+            raise ValueError(f"{self.path}: obs 宽 {self.obs_dim}，当前 {OBS_DIM}")
         if self.space != POLICY_DIM:
-            raise ValueError(f"{self.path}: space={self.space}，当前 {POLICY_DIM}")
+            raise ValueError(f"{self.path}: space={self.space}（= `pi_act` 列宽），当前 {POLICY_DIM}")
 
     # ---------------------------------------------------------------- 段
     @cached_property
@@ -114,7 +113,7 @@ class CollectData:
         z = self.z()
         win = float((self.shards.col("t_win") > 0).mean())
         return (f"{self.n_rows} 行 / {self.n_games} 段 · "
-                f"src={self.src} task={self.task} space={self.space} obs={self.obs_dim} · "
+                f"space={self.space} obs={self.obs_dim} · "
                 f"胜行占比 {win:.1%} · z({DEFAULT_SPEC}) mean {z.mean():+.3f} var {z.var():.3f}")
 
 

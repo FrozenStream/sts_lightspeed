@@ -5,3 +5,11 @@
 2026-10-14_01:56:06	boot	collect_teacher.py --n 8 --sims 3000 --cache data/warm --threads 16	/root/autodl-tmp/sts_lightspeed/run.bg.log
 2026-10-14_01:57:05	boot2	train.py train data/warm 24 --threads 16 --lr 0.001	/root/autodl-tmp/sts_lightspeed/run.bg.log
 2026-10-14_02:00:14	boot3	train.py train data/warm 24 --threads 16 --lr 0.001	/root/autodl-tmp/sts_lightspeed/run.bg.log
+2026-10-14_02:02:56	chain	_chain.sh data/warm-e24-lr0.001-wd0.0001-batch256-z_spechp-soft_target0-soft_temp1-pi_weightnone-pi_objectiveoff-loss_chunk65536-threads16-devicecpu.pt 0	/root/autodl-tmp/sts_lightspeed/run.bg.log
+2026-10-14_02:11:47	chain	_chain.sh data/warm-e24-lr0.001-wd0.0001-batch256-z_spechp-soft_target0-soft_temp1-pi_weightnone-pi_objectiveoff-loss_chunk65536-threads16-devicecpu.pt 0	/root/autodl-tmp/sts_lightspeed/run.bg.log
+2026-10-14_02:24:30	chain	_chain.sh data/warm-e24-lr0.001-wd0.0001-batch256-z_spechp-soft_target0-soft_temp1-pi_weightnone-pi_objectiveoff-loss_chunk65536-threads16-devicecpu.pt 0	/root/autodl-tmp/sts_lightspeed/run.bg.log
+2026-10-14_02:45:57	chain	_chain.sh data/warm-e24-lr0.001-wd0.0001-batch256-z_spechp-soft_target0-soft_temp1-pi_weightnone-pi_objectiveoff-loss_chunk65536-threads16-devicecpu.pt 0	/root/autodl-tmp/sts_lightspeed/run.bg.log
+2026-10-14_03:07:50	chain	_chain.sh 	/root/autodl-tmp/sts_lightspeed/run.bg.log
+2026-10-14_03:35:50	chain	_chain.sh 	/root/autodl-tmp/sts_lightspeed/run.bg.log
+2026-10-14_04:02:51	chain	_chain.sh 	/root/autodl-tmp/sts_lightspeed/run.bg.log
+2026-10-14_04:33:31	chain	_chain.sh 	/root/autodl-tmp/sts_lightspeed/run.bg.log

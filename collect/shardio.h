@@ -21,10 +21,11 @@ namespace sts::collect
     constexpr int kSelectDim = 128;
 
     // 容器布局（`collect_io.py` 的 `HDR` / `COLDIR` 同源）：
-    // 头 56 = 8(magic)+4(ver)+4(ncols)+8(nrows)+8(space)+8(obs_dim)+8(task)+8(src)；
+    // 头 24 = 8(magic)+4(ver)+4(ncols)+8(nrows)；
     // 列目录每项 36 = 16(name)+4(dtype)+8(width)+8(offset)。
-    constexpr std::uint64_t kHeaderBytes = 56;
+    constexpr std::uint64_t kHeaderBytes = 24;
     constexpr std::uint64_t kColDirBytes = 36;
+    constexpr std::uint32_t kShardVersion = 3;
 
     template <typename T>
     inline constexpr const char *shardDtype = nullptr;
@@ -64,12 +65,12 @@ namespace sts::collect
         Buffer<std::uint8_t, 128> m_sel;
         Buffer<std::int32_t, 1> a_act;
         Buffer<std::int32_t, 1> a_sel;
-        Buffer<std::int64_t, 1> t_win;
-        Buffer<std::int64_t, 1> t_hp;
-        Buffer<std::int64_t, 1> t_max_hp;
-        Buffer<std::int64_t, 1> t_turn;
-        Buffer<double, 1> t_enemy;
-        Buffer<double, 1> t_escore;
+        Buffer<std::uint8_t, 1> t_win; // `|b1`：它就是 `Term::is_win` 这个 bool（1 字节，同掩码列）
+        Buffer<std::int32_t, 1> t_hp;
+        Buffer<std::int32_t, 1> t_max_hp;
+        Buffer<std::int32_t, 1> t_turn;
+        Buffer<std::int32_t, 1> t_enemy_cur_hp;
+        Buffer<std::int32_t, 1> t_enemy_max_hp;
 
         // 列清单**只有这一份**（名字在调用点、类型/宽度/字节都在列对象上）—— KataGo 的
         // `TrainingWriteBuffers::writeToZipFile` 同形：它也是逐列手写（每列两条语句：
@@ -89,17 +90,16 @@ namespace sts::collect
             f("t_hp", t_hp);
             f("t_max_hp", t_max_hp);
             f("t_turn", t_turn);
-            f("t_enemy", t_enemy);
-            f("t_escore", t_escore);
+            f("t_enemy_cur_hp", t_enemy_cur_hp);
+            f("t_enemy_max_hp", t_enemy_max_hp);
         }
 
         /// `const` 语境（`flush` 读列）也走同一份清单 —— `eachCol` **不改任何列**。
         template <typename F>
         void eachCol(F &&f) const
         {
-            const_cast<ShardBuffers *>(this)->eachCol(
-                [&](const char *nm, auto &c)
-                { f(nm, c); });
+            const_cast<ShardBuffers *>(this)->eachCol([&](const char *nm, auto &c)
+                                                      { f(nm, c); });
         }
 
         void clear()
@@ -111,7 +111,7 @@ namespace sts::collect
         // 写**一行**：把 `Frame`（一个决策点）+ `Term`（那一场的终局读数）填进各列。
         // **写动作属于"一组列"**（KataGo 的 `TrainingWriteBuffers::addRow` 同形）。
         // ⚠️ 只装**训练要用**的东西：观测 / 策略目标与掩码 / 实际动作与行为概率 / 终局列。
-        //    场身份（`seed`/`enc`/`enc_floor`）与 `space` 都不落盘 —— 前者训练不看，后者头里有。
+        //    场身份（`seed`/`enc`/`enc_floor`）也都不落盘（训练不看它们；段号由终局列现推）。
         // ⚠️ 局部量加 `v_` 前缀：`obs` 这些**同时也是列成员名**。
         inline void add(const Frame &fr, const Term &term)
         {
@@ -125,7 +125,7 @@ namespace sts::collect
             // 归一化因子 = **访问数之和**（`pi_n` 本来就是"未归一"的原始访问数）。
             // ⚠️ 累加用 `float`（与旧口径逐位相同：旧版是在整宽 `float` 数组上求和再逐元素除）。
             float total = 0.0f;
-            for (std::int64_t n : pi_n)
+            for (int n : pi_n)
             {
                 total += static_cast<float>(n);
             }
@@ -158,7 +158,7 @@ namespace sts::collect
                     const int at = pi_idx[i];
                     if (at >= 0 && at < kPolicyDim)
                     {
-                        pa[static_cast<std::size_t>(at)] = static_cast<float>(pi_n[i]);
+                        pa[at] = static_cast<float>(pi_n[i]);
                     }
                 }
                 if (total > 0.0f)
@@ -194,6 +194,7 @@ namespace sts::collect
             // 动作下标：非本空间写 −1（同 `assemble`）。
             const std::int32_t aa = is_sel ? -1 : a_idx;
             const std::int32_t as = is_sel ? a_idx : -1;
+            const std::uint8_t v_win = term.is_win ? 1 : 0; // 列是 `|b1`，`bool` 得先落到 1 字节
 
             obs.push(v_obs);
             pi_act.push(pa.data());
@@ -202,12 +203,12 @@ namespace sts::collect
             m_sel.push(ms.data());
             a_act.push(&aa);
             a_sel.push(&as);
-            t_win.push(&term.t_win);
-            t_hp.push(&term.t_hp);
-            t_max_hp.push(&term.t_max_hp);
-            t_turn.push(&term.t_turn);
-            t_enemy.push(&term.t_enemy);
-            t_escore.push(&term.t_escore);
+            t_win.push(&v_win);
+            t_hp.push(&term.cur_hp);
+            t_max_hp.push(&term.max_hp);
+            t_turn.push(&term.turn);
+            t_enemy_cur_hp.push(&term.enemy_cur_hp);
+            t_enemy_max_hp.push(&term.enemy_max_hp);
         }
 
         // **列集合自己给字节**（不用在 `flush` 里造一个 `BufferRef` 数组）：
@@ -250,21 +251,15 @@ namespace sts::collect
         }
     };
 
-    // 分片写入器：攒够 `cap` 行就 `flush()` 写一个文件。
+    // 分片写入器：攒够行就 `flush()` 写一个文件（切分点由调用方按 `shard_rows` 管）。
     class ShardWriter
     {
     public:
         std::string path; // 输出文件路径（本容器；扩展名随意）
-        int cap = 0;      // 本分片最多几行
         int n = 0;        // 已攒行数
-        int space = 0;
-        std::string task = "encs", src = "mcts";
         ShardBuffers b;
 
         ShardWriter() = default;
-
-        /// 列名 / 宽度都是编译期给（`#m` / `kWidth`）⇒ 没有要初始化的东西。
-        void initColumns() {}
 
         void endRow() { ++n; }
 
@@ -288,20 +283,9 @@ namespace sts::collect
             }
             const char magic[8] = {'S', 'T', 'S', 'S', 'H', 'R', 'D', '1'};
             out.write(magic, 8);
-            const std::uint32_t version = 1;
-            out.write(reinterpret_cast<const char *>(&version), 4);
+            out.write(reinterpret_cast<const char *>(&kShardVersion), 4);
             out.write(reinterpret_cast<const char *>(&ncols), 4);
             out.write(reinterpret_cast<const char *>(&nrows), 8);
-            const std::int64_t space64 = space;
-            out.write(reinterpret_cast<const char *>(&space64), 8);
-            const std::int64_t obs64 = Buffer<float, Snap::snapshotLen>::width();
-            out.write(reinterpret_cast<const char *>(&obs64), 8);
-            char buf8[8] = {0};
-            std::memcpy(buf8, task.data(), std::min<std::size_t>(task.size(), 7));
-            out.write(buf8, 8);
-            std::memset(buf8, 0, sizeof(buf8));
-            std::memcpy(buf8, src.data(), std::min<std::size_t>(src.size(), 7));
-            out.write(buf8, 8);
 
             b.writeColumns(out, nrows);
 
@@ -319,15 +303,6 @@ namespace sts::collect
 
         void add(const Frame &fr, const Term &term) { b.add(fr, term); }
     };
-    /// 铺好一个分片写入器：设段宽 / 任务名 / 来源，并按快照宽度初始化列。
-    /// （唯一入口 —— 两个采集器（`teacher.cpp` / `selfplay.cpp`）都从这里开一个分片。）
-    inline void shardAddColumns(ShardWriter &w, const std::string &src)
-    {
-        w.space = kPolicyDim;
-        w.task = "encs";
-        w.src = src;
-        w.initColumns();
-    }
 
 } // namespace sts::collect
 

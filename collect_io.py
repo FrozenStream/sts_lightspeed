@@ -3,15 +3,15 @@
 
 格式（小端）：
     0   8   magic = "STSSHRD1"
-    8   4   version
+    8   4   version = 2
     12  4   ncols
     16  8   nrows
-    24  8   space
-    32  8   obs_dim
-    40  8   task（ASCII，NUL 填充）
-    48  8   src（ASCII，NUL 填充）
-    56  36*ncols  列目录：[name[16]][dtype[4] 含NUL][width u64][offset u64]
+    24  36*ncols  列目录：[name[16]][dtype[4] 含NUL][width u64][offset u64]
     ...  每列的原始数据（C 序、逐列连续）
+
+⚠️ 头里**只留这四个数**：段宽（`space`）/ 观测宽度（`obs_dim`）从列目录推（`pi_act` / `obs` 列的
+宽度）；任务名与来源（v1 的 `task` / `src`）训练侧不看 —— 存了就是第二份真相，还会随"换了采集器
+忘了改它"而说谎。⇒ 这三个（`space` / `obs_dim` / `task` / `src`）v2 一律不存。
 
 `dtype` 用 numpy 的 `descr` 短码（`<f4` / `<f8` / `<u4` / `<i4` / `<u8` / `<i8` / `|b1`；端序显式写）
 —— 只为让这里一句 `np.memmap` / `np.frombuffer` 就能用。
@@ -32,7 +32,8 @@ from typing import NamedTuple
 import numpy as np
 
 MAGIC = b"STSSHRD1"
-HDR = struct.Struct("<8sIIQQQ8s8s")     # magic, version, ncols, nrows, space, obs_dim, task, src
+VERSION = 2
+HDR = struct.Struct("<8sIIQ")           # magic, version, ncols, nrows（别的都能从列目录推，见文件头）
 COLDIR = struct.Struct("<16s4sQQ")      # name[16], dtype[4]（含 NUL）, width u64, offset u64
 
 
@@ -51,38 +52,36 @@ class Col(NamedTuple):
 
 
 class Shard(NamedTuple):
-    """一个分片的头（**不含数据**）。"""
+    """一个分片的头（**不含数据**）：只有行数 + 列目录（别的都从列目录推）。"""
     path: str
     nrows: int
-    space: int
-    obs_dim: int
-    task: str
-    src: str
     cols: dict[str, Col]
 
 
 def _read_head(path: str) -> Shard:
     """解析一个分片的头 + 列目录 —— **只读那几十字节**，数据一行都不碰。"""
     with open(path, "rb") as fh:
-        magic, version, ncols, nrows, space, obs_dim, task, src = HDR.unpack(fh.read(HDR.size))
+        magic, version, ncols, nrows = HDR.unpack(fh.read(HDR.size))
         dir_bytes = fh.read(COLDIR.size * ncols)
     if magic != MAGIC:
         raise ValueError(f"{path}: 不是本采集容器（magic={magic!r}）")
-    if version != 1:
-        raise ValueError(f"{path}: 版本 {version} 不认识")
+    if version != VERSION:
+        # ⚠️ v1 的头 56 字节（多 `space`/`obs_dim`/`task`/`src`）⇒ 列偏移全不一样，**不能按新布局读**。
+        raise ValueError(f"{path}: 分片版本 {version}（本代码只认 {VERSION}）—— v1 的头里带"
+                         f"标识字符串（`task`/`src`），列偏移与 v2 不同 ⇒ 重采一份"
+                         f"（教师 30 秒；自对弈看配方）")
     cols: dict[str, Col] = {}
     for k in range(ncols):
         name, dt, width, off = COLDIR.unpack_from(dir_bytes, k * COLDIR.size)
         cols[name.split(b"\0", 1)[0].decode()] = Col(dt.decode().strip("\0"), int(width), int(off))
-    return Shard(path, int(nrows), int(space), int(obs_dim),
-                 task.split(b"\0", 1)[0].decode(), src.split(b"\0", 1)[0].decode(), cols)
+    return Shard(path, int(nrows), cols)
 
 
 class ShardSet:
     """一组分片的**只读视图**（按名字序 = 块序；写侧按场序落盘 ⇒ 同一场的行连续）。
 
         ds = ShardSet(list_shards(dir))
-        ds.n_rows, ds.cols, ds.space, ds.obs_dim, ds.task, ds.src
+        ds.n_rows, ds.cols, ds.obs_dim, ds.space       # 后两个从列宽推（`obs` / `pi_act`）
         ds.col("obs")             # 整列（拷进内存；只给小的终局/掩码/π 列用）
         ds.col("obs", idx)        # 只取这些**全局行号**的那些行（乱序 ⇒ 按 idx 序返回）
     """
@@ -95,12 +94,19 @@ class ShardSet:
         for h in self.heads[1:]:
             if {n: c[:2] for n, c in h.cols.items()} != {n: c[:2] for n, c in h0.cols.items()}:
                 raise ValueError(f"{h.path} 的列名/dtype/宽度与 {h0.path} 不同")
-            if (h.space, h.obs_dim, h.task, h.src) != (h0.space, h0.obs_dim, h0.task, h0.src):
-                raise ValueError(f"{h.path} 的 space/obs_dim/task/src 与 {h0.path} 不同")
-        self.cols, self.space = h0.cols, h0.space
-        self.obs_dim, self.task, self.src = h0.obs_dim, h0.task, h0.src
+        self.cols = h0.cols
         self.offs = np.cumsum([0] + [h.nrows for h in self.heads])
         self.n_rows = int(self.offs[-1])
+
+    @property
+    def obs_dim(self) -> int:
+        """观测宽度 = `obs` 列的宽度（头里不存这个数）。"""
+        return self.cols["obs"].width
+
+    @property
+    def space(self) -> int:
+        """动作空间宽度 = `pi_act` 列的宽度（头里不存这个数）。"""
+        return self.cols["pi_act"].width
 
     def col(self, name: str, idx=None) -> np.ndarray:
         """列 `name`：`idx=None` = 整列；否则只取这些**全局行号**（乱序 ⇒ 按 idx 序返回）。

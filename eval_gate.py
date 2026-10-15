@@ -17,14 +17,15 @@ import slaythespire as sts
 
 import ckpt
 from collect import EVAL_SEED0, MAX_STEPS
+from tsnet import ensure_ts
 from zspec import DEFAULT_SPEC
 
 
-def parse_spec(spec: str) -> sts.EvalSpec:
+def parse_spec(spec: str, device: str = "cpu") -> sts.EvalSpec:
     """`random` | `teacher:<sims>` | `net:<path>[:<sims>]` → `sts.EvalSpec`（看不懂就报错）。"""
     p = spec.split(":")
     e = sts.EvalSpec()
-    e.label, e.device, e.z_spec = spec, "cpu", DEFAULT_SPEC
+    e.label, e.device, e.z_spec = spec, device, DEFAULT_SPEC
     if p[0] == "random" and len(p) == 1:
         e.kind = "random"
     elif p[0] == "teacher" and len(p) == 2:
@@ -32,41 +33,11 @@ def parse_spec(spec: str) -> sts.EvalSpec:
     elif p[0] == "net" and len(p) in (2, 3):
         if not os.path.exists(p[1]):
             raise FileNotFoundError(f"{spec!r}：找不到权重 {p[1]}")
-        e.kind, e.ts_path = "net", _ts_path(p[1])
+        e.kind, e.ts_path = "net", ensure_ts(p[1], device)   # ⚠️ 存档按**设备**各一份
         e.sims = int(p[2]) if len(p) == 3 else 0
     else:
         raise ValueError(f"看不懂的策略 {spec!r}（random / teacher:<sims> / net:<path>[:<sims>]）")
     return e
-
-
-def _ts_path(net_path: str) -> str:
-    """权重 → TorchScript 存档（内容指纹命名，已存在就直接用）。
-
-    ⚠️ trace 前必须落 `_jit_set_profiling_executor(False)`（C++ 的 `TorchEvaluator` 构造里也落）
-    —— 两条路径必须同一个执行器，否则数值对不上。
-    """
-    from aznet import AZNet, OBS_DIM, net_kwargs
-
-    h = str(ckpt.read(net_path)["fp"])
-    stem = os.path.splitext(os.path.basename(net_path))[0].split("-")[0]
-    path = os.path.join("data", "selfplay_ts", f"{stem}-{h}.ts")
-    if os.path.exists(path):
-        return path
-    cfg = ckpt.config_of(net_path)
-    if not cfg:
-        raise RuntimeError(f"{net_path} 存档里没有建网配置（`python ckpt.py {net_path}`）")
-    net = AZNet(**net_kwargs(cfg))
-    net.load_state_dict(ckpt.weights_of(net_path))
-    net.eval()
-    torch._C._jit_set_profiling_executor(False)
-    with torch.no_grad():
-        traced = torch.jit.trace(net, torch.zeros(8, OBS_DIM))
-    traced.eval()
-    os.makedirs(os.path.dirname(path), exist_ok=True)
-    tmp = f"{path}.{os.getpid()}.tmp"
-    torch.jit.save(traced, tmp)
-    os.replace(tmp, path)
-    return path
 
 
 def main() -> int:
@@ -76,12 +47,13 @@ def main() -> int:
     ap.add_argument("seed0", type=int, nargs="?", default=EVAL_SEED0, help="种子段起点")
     ap.add_argument("out", nargs="?", default=None, help="读数 json（不给 = 只打印）")
     ap.add_argument("--games", type=int, default=8, help="一次并肩几棵树（只改墙钟与批宽）")
+    ap.add_argument("--device", default="cpu", help="网络策略的前向设备（cpu / cuda；存档按设备各一份）")
     ap.add_argument("--max-steps", type=int, default=MAX_STEPS, help="单场步数上限")
     a = ap.parse_args()
 
     if a.seed0 < EVAL_SEED0:
         sys.exit(f"❌ seed0={a.seed0} 在训练/采集段内（< {EVAL_SEED0}）—— 评估不能用见过的种子")
-    specs = [parse_spec(s) for s in a.specs.split(",") if s]
+    specs = [parse_spec(s, a.device) for s in a.specs.split(",") if s]
     if not specs:
         sys.exit("❌ 至少要一个策略")
     if len({s.label for s in specs}) != len(specs):
@@ -100,8 +72,8 @@ def main() -> int:
     if a.out:
         os.makedirs(os.path.dirname(a.out) or ".", exist_ok=True)
         with open(a.out, "w", encoding="utf-8") as fh:
-            json.dump({"n_per": a.n_per, "seed0": a.seed0, "games": a.games, "rows": rows},
-                      fh, ensure_ascii=False, indent=2)
+            json.dump({"n_per": a.n_per, "seed0": a.seed0, "games": a.games, "device": a.device,
+                       "rows": rows}, fh, ensure_ascii=False, indent=2)
         print(f"读数 → {a.out}", flush=True)
     return 0
 

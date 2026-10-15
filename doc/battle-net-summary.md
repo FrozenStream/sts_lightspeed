@@ -186,8 +186,9 @@ flowchart LR
 
 - **PUCT（AlphaZero 式）**：网络给先验 + 叶值，**不做随机 roll-out**；树模拟全走
   C++ `BattleContext.clone() + execute()`（确定性）。
-- 实现在 `collect/selfplay.cpp`（`collect/selfplay.h` 是接口）：一个调用 = K 棵树（`SelfplayConfig::games`
-  就是 K，即前向批宽），K=1 + 探索全关 = 从前 `mcts_search` / `mcts_action`（argmax 访问数）那个口径。
+- 实现在 `collect/selfplay.cpp`（`collect/selfplay.h` 是接口）：一个调用 = 一张任务表（`selfplayRun` 走
+  `selfplayPooled` 滑窗，池宽 = `SelfplayConfig::pool` = 在飞的场数 = 前向批宽上限；测试用的 `selfplay`
+  一次全开，K=1 + 探索全关 = 从前 `mcts_search` / `mcts_action`（argmax 访问数）那个口径。
 - ⚠️ **Python 侧不再有第二份搜索**：守它的 `_chk_search.py` 一并删除 ⇒ 搜索的正确性由
   `engine-test search`（net-free UCT 的固定读数）与 `_chk_selfplay --golden`（逐帧 golden）拦，
   有意改搜索 = 显式重基线。
