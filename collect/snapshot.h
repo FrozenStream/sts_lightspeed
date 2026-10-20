@@ -21,6 +21,7 @@
 #include <array>
 #include <cassert>
 #include <cstdint>
+#include <mutex>
 #include <string>
 #include <vector>
 
@@ -119,6 +120,34 @@ namespace sts::collect
         static constexpr int potionSlotLen = potionSlots;
         static constexpr int potionSlotOff = potionOff + potionMetaLen;
 
+        // 逻辑块（落盘列/二维 group 的唯一来源；offset 是旧 flat 布局里的下标）。
+        struct Block
+        {
+            const char *name;
+            int off;
+            int len;
+        };
+        inline static constexpr std::array<Block, 18> blocks{{
+            {"obs_player", playerOff, playerLen},
+            {"obs_counts", countsOff, countsLen},
+            {"obs_hand", handOff, handSlots * handFields},
+            {"obs_draw", drawOff, pileSlots * pileFields},
+            {"obs_discard", discardOff, pileSlots * pileFields},
+            {"obs_exhaust", exhaustOff, pileSlots * pileFields},
+            {"obs_deck", deckOff, deckSlots * deckFields},
+            {"obs_monster", monsterOff, monsterSlots * monsterFields},
+            {"obs_pattr", playerAttrOff, playerAttrLen},
+            {"obs_pcnt", playerCounterOff, playerCounterLen},
+            {"obs_pstat", playerStatusOff, playerStatusLen},
+            {"obs_mstat", monsterStatusOff, monsterSlots * monsterStatusLen},
+            {"obs_select", cardSelectOff, cardSelectSlots * cardSelectFields},
+            {"obs_selmeta", selectMetaOff, selectMetaLen},
+            {"obs_runctx", runCtxOff, runCtxLen},
+            {"obs_relic", relicOff, relicLen},
+            {"obs_pmeta", potionOff, potionMetaLen},
+            {"obs_potion", potionSlotOff, potionSlotLen},
+        }};
+
         // FULL SIZE
         static constexpr int snapshotLen = potionSlotOff + potionSlotLen;
 
@@ -132,6 +161,23 @@ namespace sts::collect
         static constexpr int orangePelletsTypes = 8;
     };
 
+    // 当前快照每列的除数（0 = 类别/索引，不做除法）。由第一次 snapshotOf 记录。
+    // ⚠️ 必须在匿名 namespace **外**：`snapshotOf` 与 `ShardBuffers::add` 不在同一 TU，
+    //    内部链接的复制品会让落盘侧永远读到全 0。
+    inline std::array<std::uint16_t, Snap::snapshotLen> g_snapshot_div{};
+    inline std::once_flag g_snapshot_div_once;
+
+    inline void recordSnapshotSchema(const std::array<std::uint16_t, Snap::snapshotLen> &d)
+    {
+        std::call_once(g_snapshot_div_once, [&]
+                       { g_snapshot_div = d; });
+    }
+
+    inline const std::array<std::uint16_t, Snap::snapshotLen> &snapshotDivisors()
+    {
+        return g_snapshot_div;
+    }
+
     namespace
     {
 
@@ -142,23 +188,54 @@ namespace sts::collect
             void push(int v)
             {
                 assert(n < Snap::snapshotLen);
-                buf[n++] = static_cast<float>(v) / static_cast<float>(Divisor);
+                buf[n] = static_cast<float>(v) / static_cast<float>(Divisor);
+                raw[n] = static_cast<std::int16_t>(v);
+                div[n] = static_cast<std::uint16_t>(Divisor);
+                ++n;
             }
 
             // 名义类别 / 索引列：原样输出，供查表（嵌入）或 one-hot。**不给除数参数**。
             void push_index(int v)
             {
                 assert(n < Snap::snapshotLen);
-                buf[n++] = static_cast<float>(v);
+                buf[n] = static_cast<float>(v);
+                raw[n] = static_cast<std::int16_t>(v);
+                div[n] = 0;
+                ++n;
             }
 
-            void push_zeros(int k)
+            void pushZeroCardSelect()
             {
-                for (int i = 0; i < k; ++i)
-                    push_index(0);
+                push_index(0);
+                push<5>(0);
+                push<5>(0);
+                push<999>(0);
+            }
+
+            void pushZeroHand()
+            {
+                push_index(0);
+                push<5>(0);
+                push<100>(0);
+                push<1>(0);
+            }
+
+            void pushZeroMonster()
+            {
+                push_index(0);
+                push_index(0);
+                push<500>(0);
+                push<500>(0);
+                push<200>(0);
+                push<1>(0);
+                push<50>(0);
+                push<5>(0);
+                push<10>(0);
             }
 
             std::array<float, Snap::snapshotLen> buf{};
+            std::array<std::int16_t, Snap::snapshotLen> raw{};
+            std::array<std::uint16_t, Snap::snapshotLen> div{};
             int n = 0;
         };
 
@@ -186,7 +263,7 @@ namespace sts::collect
                 }
                 else
                 {
-                    s.push_zeros(Snap::cardSelectFields); // 非法 ⇒ 空槽
+                    s.pushZeroCardSelect(); // 非法 ⇒ 空槽
                 }
                 ++n;
             };
@@ -243,7 +320,7 @@ namespace sts::collect
             while (n < Snap::cardSelectSlots)
             {
                 // 补零宽度必须与 `cardSelectFields` **同源**：手写宽度会在字段数变化时静默错位。
-                s.push_zeros(Snap::cardSelectFields);
+                s.pushZeroCardSelect();
                 ++n;
             }
 
@@ -291,7 +368,7 @@ namespace sts::collect
                 s.push<1>(c.canUseOnAnyTarget(bc) ? 1 : 0);
             }
             else
-                s.push_zeros(Snap::handFields);
+                s.pushZeroHand();
         }
 
         // pile: [cardId]
@@ -345,7 +422,7 @@ namespace sts::collect
             }
             else
             {
-                s.push_zeros(Snap::monsterFields);
+                s.pushZeroMonster();
             }
         }
 
@@ -387,7 +464,10 @@ namespace sts::collect
                     s.push<20>(m.getStatusInternal(static_cast<MonsterStatus>(k)));
             }
             else
-                s.push_zeros(Snap::monsterStatusLen);
+                for (int k = 0; k < Snap::monsterStatusLen; ++k)
+                {
+                    s.push<20>(0);
+                }
         }
 
         appendCardSelectCandidates(bc, s);
@@ -425,6 +505,7 @@ namespace sts::collect
         }
 
         assert(s.n == Snap::snapshotLen);
+        recordSnapshotSchema(s.div);
         return s.buf;
     }
 

@@ -276,7 +276,9 @@ bool CardInstance::canUseOnAnyTarget(const BattleContext &bc) const {
 }
 
 bool CardInstance::canUse(const BattleContext &bc, int target, const bool inAutoplay) const {
-    if (this->requiresTarget() && (bc.monsters.areMonstersBasicallyDead() || !bc.monsters.arr[target].isTargetable())) {
+    if (this->requiresTarget() && (!bc.monsters.isIdxValid(target) ||
+                                   bc.monsters.areMonstersBasicallyDead() ||
+                                   !bc.monsters.arr[target].isTargetable())) {
         return false;
     }
 

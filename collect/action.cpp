@@ -1,22 +1,9 @@
-//
-// 采集侧**动作层**：统一动作索引空间的唯一实现（枚举 / 编码 / 反解 / 展开）。
-//
-// 为什么在这里（而不是 `bindings/`）：本目录的一切都在 `sts::collect` 里，采集热循环
-// （`selfplay.cpp` / `teacher.cpp`）要用它们；留一份在 `sts::py` 就得靠 `using` 跨过来。
-// 目录名 = 命名空间名 ⇒ 动作层跟采集侧同住。
-//
-// ⚠️ 本 TU **不依赖 pybind11 / libtorch**（`snapshot.h` 只要 `BattleContext` + `SimHelpers`）
-//    ⇒ `apps/engine-test.cpp` / `apps/small-test.cpp` 能直接链它。
-// ⚠️ `endTurnIdx` / `potionBase` 等段宽常量的**唯一定义**在 `bindings/slaythespire.h` 的
-//    `sts::py` 里 —— 那里同时是快照布局的宿主。本文件只**读**它们，不另立一份（两份常量
-//    必然漂移，而漂移在这里是静默错标）。
-//
 #include "action.h"
 
 #include <stdexcept>
 #include <utility>
 
-#include "slaythespire.h"  // sts::py 的段宽常量（唯一一份）
+#include "slaythespire.h"
 
 #include "sim/search/BattleScumSearcher2.h"
 
@@ -38,18 +25,18 @@ namespace sts::collect
 
     std::vector<std::pair<search::Action, int>> legalActionsWithIdx(const BattleContext &bc)
     {
-            std::vector<std::pair<search::Action, int>> out;
-            const auto acts = enumerateActions(bc);
-            out.reserve(acts.size());
-            for (const auto &a : acts)
-            {
-                out.emplace_back(a, actionToIdx(bc, a));
-            }
-            return out;
-        }
-
-        int actionToIdx(const BattleContext &bc, const search::Action &a)
+        std::vector<std::pair<search::Action, int>> out;
+        const auto acts = enumerateActions(bc);
+        out.reserve(acts.size());
+        for (const auto &a : acts)
         {
+            out.emplace_back(a, actionToIdx(bc, a));
+        }
+        return out;
+    }
+
+    int actionToIdx(const BattleContext &bc, const search::Action &a)
+    {
         switch (a.getActionType())
         {
         case search::ActionType::CARD:

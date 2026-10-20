@@ -35,6 +35,7 @@
 #include "action.h" // 动作层（枚举 / 编码 / 反解）—— `sts::collect`
 
 #include "scenebuild_bind.h" // registerSceneBuild（纯 C++ 那半在 scenebuild.h）
+#include "scenebuild.h"
 #include "selfplay.h"
 #include "teacher.h"
 #include "eval.h"       // registerEval（配对评估触发器）
@@ -112,6 +113,8 @@ static constexpr std::pair<const char *, Event> kEventBindingNames[] = {
 #include "snapshot.h" // Snap / snapshotOf（采集侧也要用）
 using sts::collect::Snap;
 using sts::collect::snapshotOf;
+using sts::collect::snapshotDivisors;
+using sts::collect::buildBattle;
 
 // ⚠️ 模块名是 `_slaythespire`（**下划线开头**），而它住在一个同名的**包**里
 //    （`bindings/slaythespire_pkg/__init__.py`）；`import slaythespire` 拿到的是那个包。
@@ -213,6 +216,14 @@ PYBIND11_MODULE(_slaythespire, m)
         []()
         {
             pybind11::dict d;
+            // 初始化一次除数表：`snapshot_layout()` 在训练导入时就会被调用，不能等第一场。
+            static const bool schema_ready = []
+            {
+                BattleContext bc = buildBattle(0, MonsterEncounter::CULTIST, 1, 0);
+                (void)snapshotOf(bc);
+                return true;
+            }();
+            (void)schema_ready;
             d["len"] = Snap::snapshotLen;
             d["player_len"] = Snap::playerLen;
             d["player_off"] = Snap::playerOff;
@@ -261,6 +272,14 @@ PYBIND11_MODULE(_slaythespire, m)
             d["stance_types"] = Snap::stanceTypes;
             d["orange_pellets_types"] = Snap::orangePelletsTypes;
             d["potion_types"] = Snap::potionTypes;
+            d["divisors"] = std::vector<std::uint16_t>(snapshotDivisors().begin(), snapshotDivisors().end());
+            std::vector<std::string> blocks;
+            blocks.reserve(Snap::blocks.size());
+            for (const auto &b : Snap::blocks)
+            {
+                blocks.emplace_back(b.name);
+            }
+            d["obs_blocks"] = blocks;
             return d;
         },
         "fixed-length battle snapshot layout: block lengths and start offsets");

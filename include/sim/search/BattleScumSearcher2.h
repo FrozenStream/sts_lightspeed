@@ -46,6 +46,9 @@ namespace sts::search {
         std::int64_t playoutCount = 0;
         std::int64_t winCount = 0;
 
+        // 已执行的转移数（树内推进 + 随机 playout 各算 1）。预算对齐（MCTS vs beam）用。
+        std::int64_t transitionCount = 0;
+
         std::vector<Action> bestActionSequence;
         std::default_random_engine randGen;
 

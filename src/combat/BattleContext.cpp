@@ -59,6 +59,11 @@ void BattleContext::init(const GameContext &gc, MonsterEncounter encounterToInit
     player.curHp = gc.curHp;
     player.maxHp = gc.maxHp;
     player.gold = gc.gold;
+    // ⚠️ 以前**没拷** `cc`：`Player::cc` 没有默认值 ⇒ 战斗内任何"按职业取随机牌/随机药水"的
+    //    地方（`getTrulyRandomCardInCombat`、Entropic Brew 的 `returnRandomPotion(..., player.cc, …)`）
+    //    都在读**未初始化内存**，甚至越界索引 `PotionPool::potionPool[cc]`（2026-10-18 整局测试
+    //    喝 Entropic Brew 时实测：抽到的全是 INVALID/EMPTY ⇒ 稀有度永远对不上 ⇒ 死循环）。
+    player.cc = gc.cc;
 
     monsters.init(*this, encounterToInit);
     if (gc.map->burningEliteX == gc.curMapNodeX && gc.map->burningEliteY == gc.curMapNodeY) {
@@ -859,8 +864,22 @@ void BattleContext::playCardQueueItem(CardQueueItem playItem) {
         item.target = monsters.getRandomMonsterIdx(cardRandomRng);
     }
 
+    // 目标是否"能打"：越界（含 -1）一律当**不能**（`arr[-1]` 读的是 `BattleContext` 别的字段的内存）。
+    bool targetable = true;
+    if (c.requiresTarget())
+    {
+        if (!monsters.isIdxValid(item.target))
+        {
+            // 只该出现在"半死怪窗口"（觉醒者转阶段 / 暗灵待复活）：那时 `Havoc` / `DistilledChaos` /
+            // 遗物 / `randomTarget` 会把 `getRandomMonsterIdx(...)` 的 -1 塞进来。报一次便于追溯。
+            reportInvalidMonsterIdx("playCardQueueItem(排队卡的目标失效)", seed, item.target,
+                                    monsters.monsterCount, monsters.monstersAlive);
+        }
+        targetable = monsters.isIdxValid(item.target) && monsters.arr[item.target].isTargetable();
+    }
+
 //    bool canPlayCard = false; // not really sure what this is used for
-    const bool canUseCard = item.purgeOnUse || (item.triggerOnUse && c.canUse(*this, item.target, item.autoplay) && (!c.requiresTarget() || monsters.arr[item.target].isTargetable()));
+    const bool canUseCard = item.purgeOnUse || (item.triggerOnUse && c.canUse(*this, item.target, item.autoplay) && targetable);
     if (canUseCard) { // not sure if this is correct,
 //        canPlayCard = true; // what is this for......
 
@@ -872,7 +891,7 @@ void BattleContext::playCardQueueItem(CardQueueItem playItem) {
             player.lastTargetedMonster = item.target;
         }
 
-        if (!c.requiresTarget() || monsters.arr[item.target].isTargetable()) { // this is redundant right???? -> no i think echo form abilities can queue a card with invalid target
+        if (targetable) { // this is redundant right???? -> no i think echo form abilities can queue a card with invalid target
             useCard();
         }
 

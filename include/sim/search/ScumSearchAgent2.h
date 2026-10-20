@@ -17,7 +17,9 @@ namespace sts::search {
     struct BattleScumSearcher2;
 
     struct ScumSearchAgent2 {
-        std::int64_t simulationCountTotal;
+        // ⚠️ 以前这里没有默认值：`playout` 里是 `+=`，`apps/test.cpp` 的 totalSimulations 也在加它
+        // ⇒ 读的是未初始化内存（2026-10-18 整局测试里打印出 2.2e12 这种数）。
+        std::int64_t simulationCountTotal = 0;
         std::vector<int> gameActionHistory;
 
         int stepCount = 0;

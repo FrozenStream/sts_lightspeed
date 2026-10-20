@@ -310,7 +310,10 @@ Potion sts::returnRandomPotionOfRarity(Random &potionRng, PotionRarity rarity, C
     // this is dumb.
     Potion temp = getRandomPotion(potionRng, cc);
     bool spamCheck = limited;
-    while(potionRarities[static_cast<int>(temp)] != rarity || spamCheck) {
+    // ⚠️ 理论上一两百次内必中；但"池子里根本没有这个稀有度"（旧 `player.cc` 未初始化时就是这个
+    //    症状：全抽到 INVALID/EMPTY）会让它**永远转下去**。给个上限兜底，抽不到就交最后一次结果。
+    for (int attempt = 0; attempt < 1000 && (potionRarities[static_cast<int>(temp)] != rarity || spamCheck);
+         ++attempt) {
         spamCheck = limited;
         temp = getRandomPotion(potionRng, cc);
         if (temp != Potion::FRUIT_JUICE) {

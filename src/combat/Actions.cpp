@@ -16,11 +16,11 @@ Action Actions::SetState(InputState state) {
 
 Action Actions::AttackEnemy(int idx, int damage) {
     return {[=] (BattleContext &bc) {
-        if (bc.monsters.arr[idx].isDeadOrEscaped()) {
+        if (bc.monsters.arr.at(idx).isDeadOrEscaped()) {
             return;
         }
 
-        bc.monsters.arr[idx].attacked(bc, damage);
+        bc.monsters.arr.at(idx).attacked(bc, damage);
         bc.checkCombat();
     }};
 }
@@ -62,11 +62,11 @@ Action Actions::AttackAllEnemy(DamageMatrix damageMatrix) {
 
 Action Actions::DamageEnemy(int idx, int damage) {
     return {[=] (BattleContext &bc) {
-        if (bc.monsters.arr[idx].isDeadOrEscaped()) {
+        if (bc.monsters.arr.at(idx).isDeadOrEscaped()) {
             return;
         }
 
-        bc.monsters.arr[idx].damage(bc, damage);
+        bc.monsters.arr.at(idx).damage(bc, damage);
         bc.checkCombat();
     }};
 }
@@ -119,7 +119,7 @@ Action Actions::HealPlayer(int amount) {
 
 Action Actions::MonsterGainBlock(int idx, int amount) {
     return {[=] (BattleContext &bc) {
-        bc.monsters.arr[idx].addBlock(amount);
+        bc.monsters.arr.at(idx).addBlock(amount);
     }};
 }
 
@@ -1069,11 +1069,11 @@ Action Actions::EntrenchAction() {
 
 Action Actions::FeedAction(int idx, int damage, bool upgraded) {
     return {[=] (BattleContext &bc) {
-        auto &m = bc.monsters.arr[idx];
+        auto &m = bc.monsters.arr.at(idx);
         if (m.isDeadOrEscaped()) {
             return;
         }
-        bc.monsters.arr[idx].attacked(bc, damage);
+        bc.monsters.arr.at(idx).attacked(bc, damage);
 
         const bool effectTriggered = !m.hasStatus<MS::MINION>()
                 && !m.isAlive()
@@ -1102,11 +1102,11 @@ Action Actions::FiendFireAction(int targetIdx, int calculatedDamage) {
 
 Action Actions::HandOfGreedAction(int idx, int damage, bool upgraded) {
     return {[=] (BattleContext &bc) {
-        auto &m = bc.monsters.arr[idx];
+        auto &m = bc.monsters.arr.at(idx);
         if (m.isDeadOrEscaped()) {
             return;
         }
-        bc.monsters.arr[idx].damage(bc, damage);
+        bc.monsters.arr.at(idx).damage(bc, damage);
 
         const bool effectTriggered = !m.hasStatus<MS::MINION>()
                 && !m.isAlive()
@@ -1153,11 +1153,11 @@ Action Actions::ReaperAction(int baseDamage) {
 
 Action Actions::RitualDaggerAction(int idx, int damage) {
     return {[=] (BattleContext &bc) {
-        auto &m = bc.monsters.arr[idx];
+        auto &m = bc.monsters.arr.at(idx);
         if (m.isDeadOrEscaped()) {
             return;
         }
-        bc.monsters.arr[idx].attacked(bc, damage);
+        bc.monsters.arr.at(idx).attacked(bc, damage);
 
         const bool shouldUpgrade = !m.hasStatus<MS::MINION>()
                                    && !m.isAlive()
@@ -1224,7 +1224,7 @@ Action Actions::SwordBoomerangAction(int baseDamage) { // pretty hacky until I c
 
 Action Actions::SpotWeaknessAction(int target, int strength) {
     return {[=](BattleContext &bc) {
-        if (bc.monsters.arr[target].isAttacking()) {
+        if (bc.monsters.arr.at(target).isAttacking()) {
             bc.player.buff<PS::STRENGTH>(strength);
         }
     }};

@@ -25,7 +25,7 @@ namespace sts::collect
     // 列目录每项 36 = 16(name)+4(dtype)+8(width)+8(offset)。
     constexpr std::uint64_t kHeaderBytes = 24;
     constexpr std::uint64_t kColDirBytes = 36;
-    constexpr std::uint32_t kShardVersion = 3;
+    constexpr std::uint32_t kShardVersion = 5;
 
     template <typename T>
     inline constexpr const char *shardDtype = nullptr;
@@ -37,6 +37,10 @@ namespace sts::collect
     inline constexpr const char *shardDtype<std::uint32_t> = "<u4";
     template <>
     inline constexpr const char *shardDtype<std::int32_t> = "<i4";
+    template <>
+    inline constexpr const char *shardDtype<std::int16_t> = "<i2";
+    template <>
+    inline constexpr const char *shardDtype<std::uint16_t> = "<u2";
     template <>
     inline constexpr const char *shardDtype<std::uint64_t> = "<u8";
     template <>
@@ -58,10 +62,26 @@ namespace sts::collect
 
     struct ShardBuffers
     {
-        Buffer<float, sts::collect::Snap::snapshotLen> obs;
-        Buffer<float, 96> pi_act;
-        Buffer<float, 128> pi_sel;
-        Buffer<std::uint8_t, 96> m_act;
+        Buffer<float, sts::collect::Snap::playerLen> obs_player;
+        Buffer<float, sts::collect::Snap::countsLen> obs_counts;
+        Buffer<float, sts::collect::Snap::handSlots * sts::collect::Snap::handFields> obs_hand;
+        Buffer<float, sts::collect::Snap::pileSlots> obs_draw;
+        Buffer<float, sts::collect::Snap::pileSlots> obs_discard;
+        Buffer<float, sts::collect::Snap::pileSlots> obs_exhaust;
+        Buffer<float, sts::collect::Snap::deckSlots> obs_deck;
+        Buffer<float, sts::collect::Snap::monsterSlots * sts::collect::Snap::monsterFields> obs_monster;
+        Buffer<float, sts::collect::Snap::playerAttrLen> obs_pattr;
+        Buffer<float, sts::collect::Snap::playerCounterLen> obs_pcnt;
+        Buffer<float, sts::collect::Snap::playerStatusLen> obs_pstat;
+        Buffer<float, sts::collect::Snap::monsterSlots * sts::collect::Snap::monsterStatusLen> obs_mstat;
+        Buffer<float, sts::collect::Snap::cardSelectSlots * sts::collect::Snap::cardSelectFields> obs_select;
+        Buffer<float, sts::collect::Snap::selectMetaLen> obs_selmeta;
+        Buffer<float, sts::collect::Snap::runCtxLen> obs_runctx;
+        Buffer<float, sts::collect::Snap::relicLen> obs_relic;
+        Buffer<float, sts::collect::Snap::potionMetaLen> obs_pmeta;
+        Buffer<float, sts::collect::Snap::potionSlotLen> obs_potion;
+        Buffer<std::uint16_t, 96> pi_act;
+        Buffer<std::uint16_t, 128> pi_sel;        Buffer<std::uint8_t, 96> m_act;
         Buffer<std::uint8_t, 128> m_sel;
         Buffer<std::int32_t, 1> a_act;
         Buffer<std::int32_t, 1> a_sel;
@@ -79,7 +99,24 @@ namespace sts::collect
         template <typename F>
         void eachCol(F &&f)
         {
-            f("obs", obs);
+            f("obs_player", obs_player);
+            f("obs_counts", obs_counts);
+            f("obs_hand", obs_hand);
+            f("obs_draw", obs_draw);
+            f("obs_discard", obs_discard);
+            f("obs_exhaust", obs_exhaust);
+            f("obs_deck", obs_deck);
+            f("obs_monster", obs_monster);
+            f("obs_pattr", obs_pattr);
+            f("obs_pcnt", obs_pcnt);
+            f("obs_pstat", obs_pstat);
+            f("obs_mstat", obs_mstat);
+            f("obs_select", obs_select);
+            f("obs_selmeta", obs_selmeta);
+            f("obs_runctx", obs_runctx);
+            f("obs_relic", obs_relic);
+            f("obs_pmeta", obs_pmeta);
+            f("obs_potion", obs_potion);
             f("pi_act", pi_act);
             f("pi_sel", pi_sel);
             f("m_act", m_act);
@@ -122,17 +159,14 @@ namespace sts::collect
             const bool &is_sel = fr.is_sel;
             const int &a_idx = fr.a_idx;
 
-            // 归一化因子 = **访问数之和**（`pi_n` 本来就是"未归一"的原始访问数）。
-            // ⚠️ 累加用 `float`（与旧口径逐位相同：旧版是在整宽 `float` 数组上求和再逐元素除）。
-            float total = 0.0f;
-            for (int n : pi_n)
-            {
-                total += static_cast<float>(n);
-            }
-
             // 两个头各是**定长数组**（栈上、零初始化），只填本空间有效的那一个。
-            std::array<float, kPolicyDim> pa{};
-            std::array<float, kSelectDim> ps{};
+            // v4 存**未归一访问数**（u16）；训练读侧再归一化。省一半列宽，且保留原始计数。
+            std::array<std::uint16_t, kPolicyDim> pa{};
+            std::array<std::uint16_t, kSelectDim> ps{};
+            const auto count16 = [](std::int64_t n)
+            {
+                return static_cast<std::uint16_t>(std::clamp<std::int64_t>(n, 0, 65535));
+            };
             if (is_sel)
             {
                 for (std::size_t i = 0; i < pi_idx.size(); ++i)
@@ -140,14 +174,7 @@ namespace sts::collect
                     const int at = pi_idx[i];
                     if (at >= 0 && at < kSelectDim)
                     {
-                        ps[static_cast<std::size_t>(at)] = static_cast<float>(pi_n[i]);
-                    }
-                }
-                if (total > 0.0f)
-                {
-                    for (float &v : ps)
-                    {
-                        v /= total;
+                        ps[static_cast<std::size_t>(at)] = count16(pi_n[i]);
                     }
                 }
             }
@@ -158,14 +185,7 @@ namespace sts::collect
                     const int at = pi_idx[i];
                     if (at >= 0 && at < kPolicyDim)
                     {
-                        pa[at] = static_cast<float>(pi_n[i]);
-                    }
-                }
-                if (total > 0.0f)
-                {
-                    for (float &v : pa)
-                    {
-                        v /= total;
+                        pa[static_cast<std::size_t>(at)] = count16(pi_n[i]);
                     }
                 }
             }
@@ -196,7 +216,27 @@ namespace sts::collect
             const std::int32_t as = is_sel ? a_idx : -1;
             const std::uint8_t v_win = term.is_win ? 1 : 0; // 列是 `|b1`，`bool` 得先落到 1 字节
 
-            obs.push(v_obs);
+            // 观测落盘：写侧已经是归一化 float；这里只按块切列，读侧直接拼回。
+            const auto pushBlock = [&](auto &col, int off)
+            { col.push(v_obs + off); };
+            pushBlock(obs_player, sts::collect::Snap::playerOff);
+            pushBlock(obs_counts, sts::collect::Snap::countsOff);
+            pushBlock(obs_hand, sts::collect::Snap::handOff);
+            pushBlock(obs_draw, sts::collect::Snap::drawOff);
+            pushBlock(obs_discard, sts::collect::Snap::discardOff);
+            pushBlock(obs_exhaust, sts::collect::Snap::exhaustOff);
+            pushBlock(obs_deck, sts::collect::Snap::deckOff);
+            pushBlock(obs_monster, sts::collect::Snap::monsterOff);
+            pushBlock(obs_pattr, sts::collect::Snap::playerAttrOff);
+            pushBlock(obs_pcnt, sts::collect::Snap::playerCounterOff);
+            pushBlock(obs_pstat, sts::collect::Snap::playerStatusOff);
+            pushBlock(obs_mstat, sts::collect::Snap::monsterStatusOff);
+            pushBlock(obs_select, sts::collect::Snap::cardSelectOff);
+            pushBlock(obs_selmeta, sts::collect::Snap::selectMetaOff);
+            pushBlock(obs_runctx, sts::collect::Snap::runCtxOff);
+            pushBlock(obs_relic, sts::collect::Snap::relicOff);
+            pushBlock(obs_pmeta, sts::collect::Snap::potionOff);
+            pushBlock(obs_potion, sts::collect::Snap::potionSlotOff);
             pi_act.push(pa.data());
             pi_sel.push(ps.data());
             m_act.push(ma.data());

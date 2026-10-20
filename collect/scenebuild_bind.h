@@ -12,9 +12,7 @@
 
 namespace sts::collect
 {
-
-void registerSceneBuild(pybind11::module_ &m);
-
+    void registerSceneBuild(pybind11::module_ &m);
 } // namespace sts::collect
 
-#endif //STS_LIGHTSPEED_SCENEBUILD_BIND_H
+#endif // STS_LIGHTSPEED_SCENEBUILD_BIND_H

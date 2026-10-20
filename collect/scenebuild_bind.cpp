@@ -15,9 +15,6 @@
 #include <pybind11/stl.h>
 
 #include <cstdint>
-#include <string>
-#include <utility>
-#include <vector>
 
 namespace sts::collect
 {
@@ -26,19 +23,8 @@ namespace sts::collect
     {
         namespace py = pybind11;
 
-        py::class_<StagedBattle>(m, "StagedBattle")
-            .def_readonly("b", &StagedBattle::b)
-            .def_readonly("cur_hp", &StagedBattle::cur_hp)
-            .def_readonly("max_hp", &StagedBattle::max_hp)
-            .def_readonly("gold", &StagedBattle::gold)
-            .def_readonly("deck", &StagedBattle::deck)
-            .def_readonly("relics", &StagedBattle::relics)
-            .def_readonly("potions", &StagedBattle::potions);
         m.def("build_battle", &buildBattle, py::arg("seed"), py::arg("enc"), py::arg("floor"), py::arg("ascension"),
               "按层造一局战斗（本文件的 `shapeFloor`；同 seed 逐位可复现）");
-        m.def("build_staged", &buildStaged, py::arg("seed"), py::arg("enc"), py::arg("floor"), py::arg("ascension"),
-              "同 `build_battle`，但把牌组 / 遗物 / 药水 / hp / "
-              "金币一起交出来（诊断与对拍用）");
         m.def("ascension_of", &ascensionOf, py::arg("seed"), "按 seed 抽本场的进阶等级（唯一决定 A10+ 的进阶之灾）");
         m.def("act_of", &actOf, py::arg("floor"), "层号 → 幕（17/34/51 是幕分界；唯一的实现，`scene.act_of` 只是转发）");
     }

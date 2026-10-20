@@ -14,16 +14,22 @@
 //   selfplay-test <net.onnx> 4 16         # K=4、sims=16
 //   selfplay-test <net.onnx> 1 4 20       # 「反复调用」模式（一进程内多次调，守卫那种用法）
 //   selfplay-test <net.onnx> 8 4 1 --pool 1   # **池化（补场）路径**：池宽 1 ⇒ 结果必须逐位等于逐场单跑
-//   selfplay-test <net.onnx> 1 4 1 --cpu-rows 10  # **尾段分流**（窄批走 CPU 会话）：K=1 时与不分流
-//                                             #   逐位相同（同存档同 EP ⇒ 只换哪条线程算）
+//   selfplay-test <net.onnx> 8 4 1 --tail-guard  # **尾段**（worker 就地前向）：池宽 1 ⇒ 首次交付后由 CPU
+//                                             #   会话接手；同存档同 EP ⇒ 与逐场单跑逐位相同
 //   selfplay-test <net.onnx> --sweep 96   # **扫描**：`_chk_selfplay` ② 那张表（多遭遇 × 多 seed，
 //                                       #  含 act4 / CARD_SELECT 帧）——只跑 CULTIST@4 会漏整类形状。
+//   selfplay-test <net.onnx> --stall-guard      # 交付环满 ⇒ 补场重试
+//   selfplay-test <net.onnx> --emit-throw-guard # 交付抛异常必须可捕获（不是 terminate）
 //
 #include <algorithm>
+#include <atomic>
+#include <chrono>
 #include <cstdint>
 #include <cstdio>
+#include <cstdlib>
 #include <cstring>
 #include <memory>
+#include <stdexcept>
 #include <string>
 #include <thread>
 #include <vector>
@@ -51,11 +57,10 @@ namespace
 }
 
 // 把 `selfplay` 的交付序结果收成一个 vector（测试要逐帧检查 ⇒ 不能只收终局）。
-std::vector<GameOut> runAll(const std::vector<BattleContext> &battles,
-                            const std::vector<std::uint64_t> &seeds, const SelfplayConfig &cfg)
+std::vector<GameOut> runAll(const std::vector<BattleContext> &battles, const SelfplayConfig &cfg)
 {
     std::vector<GameOut> outs(battles.size());
-    selfplay(battles, seeds, cfg, [&](std::size_t j, GameOut &&g)
+    selfplay(battles, cfg, [&](std::size_t j, GameOut &&g)
              { outs[j] = std::move(g); });
     return outs;
 }
@@ -63,15 +68,14 @@ std::vector<GameOut> runAll(const std::vector<BattleContext> &battles,
 // 池化路径（**池宽 < 任务数** ⇒ 走"跑完一场立刻补一场"那条路）。这条路上的下标逻辑与
 // `start_task`/`emitted` 计数是独立的，`runAll`（池宽 = 任务数）根本碰不到它 ⇒ 单独守。
 std::vector<GameOut> runAllPooled(const std::vector<BattleContext> &battles,
-                                  const std::vector<std::uint64_t> &seeds, const SelfplayConfig &cfg,
-                                  std::size_t pool)
+                                  const SelfplayConfig &cfg, std::size_t pool)
 {
     std::vector<GameOut> outs(battles.size());
-    std::vector<TaskIn> tasks;
+    std::vector<BattleContext> tasks;
     tasks.reserve(battles.size());
-    for (std::size_t j = 0; j < battles.size(); ++j)
+    for (const BattleContext &battle : battles)
     {
-        tasks.push_back(TaskIn{battles[j], seeds[j]});
+        tasks.push_back(battle);
     }
     selfplayPooled(
         tasks.size(), pool, [&](std::size_t j) { return tasks[j]; }, cfg,
@@ -172,15 +176,15 @@ void checkFrames(const std::vector<GameOut> &outs, const char *where)
 // ⚠️ `pool == 1` 时只有一棵树在飞 ⇒ 批恒 1 行 ⇒ 结果必须**逐位等于**"一场一场单跑"（这就是这条
 //    路上最强的断言：补场计数错了、槽位串了就立刻对不上）。池宽 > 1 时批组成由时序决定（本来
 //    就与批宽相关）⇒ 只断言形状与"任务序交付"。
-void checkPooled(const std::vector<BattleContext> &battles, const std::vector<std::uint64_t> &seeds,
-                 const SelfplayConfig &cfg, std::size_t pool)
+void checkPooled(const std::vector<BattleContext> &battles, const SelfplayConfig &cfg,
+                 std::size_t pool)
 {
     const std::size_t K = battles.size();
-    std::vector<TaskIn> tasks;
+    std::vector<BattleContext> tasks;
     tasks.reserve(K);
-    for (std::size_t j = 0; j < K; ++j)
+    for (const BattleContext &battle : battles)
     {
-        tasks.push_back(TaskIn{battles[j], seeds[j]});
+        tasks.push_back(battle);
     }
     const auto run = [&]
     {
@@ -206,7 +210,7 @@ void checkPooled(const std::vector<BattleContext> &battles, const std::vector<st
         std::size_t n_rows = 0;
         for (std::size_t j = 0; j < K; ++j)
         {
-            const std::vector<GameOut> ref = runAll({battles[j]}, {seeds[j]}, cfg); // 单跑（批恒 1 行）
+            const std::vector<GameOut> ref = runAll({battles[j]}, cfg); // 单跑（批恒 1 行）
             const std::vector<GameOut> mine{games[j]};                              // 滑窗里的第 j 场
             const std::vector<std::string> dref = digest(ref);
             const std::vector<std::string> dmine = digest(mine);
@@ -259,23 +263,21 @@ void sweep(const std::string &ts, int sims, int n_seed, int workers)
     {
         for (int seed = 0; seed < n_seed; ++seed)
         {
+            const auto s = static_cast<std::uint64_t>(seed);
             std::vector<BattleContext> battles;
-            std::vector<std::uint64_t> seeds;
-            seeds.push_back(static_cast<std::uint64_t>(seed));
-            battles.push_back(
-                buildBattle(seeds.back(), c.enc, c.floor, ascensionOf(seeds.back())));
+            battles.push_back(buildBattle(s, c.enc, c.floor, ascensionOf(s)));
             SelfplayConfig cfg;
             cfg.model_path = ts;
             cfg.z_spec = "enginenorm";
             cfg.device = "cpu";
             cfg.sims = sims;
+            cfg.sims_cheap_frac = 0.0; // 守卫要的是精确 sims（两档随机化预算只在采集里开）
             cfg.max_steps = 40;
-            cfg.threads = 1;
             cfg.pool = 1; // 单场：池宽恒 1
             cfg.workers = workers;
             cfg.c_puct = 1.5;
             cfg.q_init = 0.0;
-            const std::vector<GameOut> outs = runAll(battles, seeds, cfg);
+            const std::vector<GameOut> outs = runAll(battles, cfg);
             const std::string where = monsterEncounterEnumNames[static_cast<int>(c.enc)] +
                                       std::string("@") + std::to_string(c.floor) +
                                       " seed=" + std::to_string(seed);
@@ -288,6 +290,145 @@ void sweep(const std::string &ts, int sims, int n_seed, int workers)
                  total_frames, sims, n_seed);
 }
 
+// 交付环（`D = min(K, 8S)`）相关的两条路，都必须跑完：
+//   A. **环满 ⇒ 补场重试**。复现姿势（2026-10-16 实测）：池宽 1（`D = 8`）、把**首次交付**放慢 ⇒
+//      树槽在 `started - emitted` 顶到 8 之后全部跑空，池子停在 9/K 不动。
+//   B. **环满时的并发补场**。`K > D`（池宽 1 时 `D = 8`）⇒ 整轮都在"跑完一场补一场"里，`retire`
+//      与主线程交付后的补场会**同时**想开新场 —— 两个触发源必须抢不到同一个空槽（否则同槽开两场、
+//      其中一场永远不落交付槽，实测报"交付槽被覆盖"）。A 那条覆盖不到它（A 里 worker 是睡着的）。
+// ⚠️ 判据是"**跑完**"而不是"没崩"：这类 bug 的表现是**静静地不返回**，所以配看门狗，超时就报错
+//    （否则守卫自己会永远挂着，看不出是失败）。
+void deliveryGuard(const std::string &ts, int sims)
+{
+    const auto make = [&](std::size_t j)
+    { return buildBattle(j, MonsterEncounter::CULTIST, 4, ascensionOf(j)); };
+    const auto run = [&](std::size_t K, std::size_t pool, long slow_first_us, const char *what)
+    {
+        SelfplayConfig cfg;
+        cfg.model_path = ts;
+        cfg.z_spec = "enginenorm";
+        cfg.device = "cpu";
+        cfg.sims = sims;
+        cfg.sims_cheap_frac = 0.0; // 同上：延迟/交付守卫不掺随机化预算
+        cfg.max_steps = 40;
+        cfg.workers = static_cast<int>(std::min<std::size_t>(pool, 4));
+        cfg.c_puct = 1.5;
+        cfg.q_init = 0.0;
+
+        std::vector<BattleContext> tasks;
+        for (std::size_t j = 0; j < K; ++j)
+        {
+            tasks.push_back(make(j));
+        }
+        std::vector<GameOut> outs(K);
+        std::atomic<bool> finished{false};
+        std::thread watchdog(
+            [&]
+            {
+                for (int i = 0; i < 1200; ++i) // 1200 × 50 ms = 60 s 上限
+                {
+                    std::this_thread::sleep_for(std::chrono::milliseconds(50));
+                    if (finished.load())
+                    {
+                        return;
+                    }
+                }
+                std::fprintf(stderr, "❌ %s：60 s 内没跑完（池宽 %zu / %zu 场）\n", what, pool, K);
+                std::fflush(stderr);
+                std::abort(); // 挂着的是池子里的线程 ⇒ 只能把进程带走
+            });
+        std::size_t delivered = 0;
+        const auto body = [&]
+        {
+            selfplayPooled(
+                K, pool, [&](std::size_t j) { return tasks[j]; }, cfg,
+                [&](std::size_t j, GameOut &&g)
+                {
+                    if (slow_first_us > 0 && delivered == 0)
+                    {
+                        std::this_thread::sleep_for(std::chrono::microseconds(slow_first_us));
+                    }
+                    if (j >= K || !outs[j].frames.empty())
+                    {
+                        fail(std::string(what) + "：交付下标越界或被交付两次");
+                    }
+                    outs[j] = std::move(g);
+                    ++delivered;
+                });
+        };
+        try
+        {
+            body();
+        }
+        catch (const std::exception &e)
+        {
+            finished.store(true);
+            watchdog.join();
+            fail(std::string(what) + "：抛异常（" + e.what() + "）");
+        }
+        finished.store(true);
+        watchdog.join();
+        if (delivered != K)
+        {
+            fail(std::string(what) + "：交付场数 " + std::to_string(delivered) + " ≠ " +
+                 std::to_string(K));
+        }
+        std::fprintf(stderr, "  ✓ %s：%zu 场全交付（池宽 %zu）\n", what, delivered, pool);
+    };
+
+    run(12, 1, 1500000, "交付环满（首次交付慢 1.5 s）⇒ 补场重试");
+    run(24, 1, 0, "交付环满常态（K > D，retire 与主线程交付并发补场）");
+    run(24, 3, 0, "交付环满常态（池宽 3）");
+}
+
+// `emit`（写盘）抛异常：必须**能**被外层捕获，而不是 `std::terminate`。
+// 旧代码在交付循环里直接 `emit(...)` ⇒ 异常往外抛时局部 `std::vector<std::thread>` 先析构，
+// 还 joinable ⇒ terminate（实测：外层 catch 根本来不及）。
+void emitThrowGuard(const std::string &ts, int sims)
+{
+    const std::size_t K = 4;
+    std::vector<BattleContext> tasks;
+    for (std::size_t j = 0; j < K; ++j)
+    {
+        tasks.push_back(buildBattle(j, MonsterEncounter::CULTIST, 4, ascensionOf(j)));
+    }
+    SelfplayConfig cfg;
+    cfg.model_path = ts;
+    cfg.z_spec = "enginenorm";
+    cfg.device = "cpu";
+    cfg.sims = sims;
+    cfg.sims_cheap_frac = 0.0; // 同上
+    cfg.max_steps = 40;
+    cfg.workers = 2;
+    cfg.c_puct = 1.5;
+    cfg.q_init = 0.0;
+
+    bool caught = false;
+    std::size_t delivered = 0;
+    try
+    {
+        selfplayPooled(
+            K, 2, [&](std::size_t j) { return tasks[j]; }, cfg,
+            [&](std::size_t, GameOut &&)
+            {
+                if (++delivered == 2)
+                {
+                    throw std::runtime_error("注入的写盘失败");
+                }
+            });
+    }
+    catch (const std::exception &e)
+    {
+        caught = true;
+        std::fprintf(stderr, "  ✓ 交付抛异常被捕获（不是 terminate）：%s（已交付 %zu 场）\n", e.what(),
+                     delivered - 1);
+    }
+    if (!caught)
+    {
+        fail("交付异常没有传出来（旧行为是 std::terminate；这里连 catch 都没进）");
+    }
+}
+
 } // namespace
 
 int main(int argc, char **argv)
@@ -296,43 +437,73 @@ int main(int argc, char **argv)
     {
         std::fprintf(stderr, "用法：selfplay-test <net.onnx> [K=1] [sims=4] [reps=1] [--workers N]\n"
                              "      selfplay-test <net.onnx> [K=8] [sims=4] [--pool P]   # 池化（补场）路径\n"
-                             "      selfplay-test <net.onnx> [K=1] [sims=4] [--cpu-rows N] # 尾段分流（③）\n"
                              "      selfplay-test <net.onnx> --sweep [sims] [n_seed] [--workers N]\n"
+                             "      selfplay-test <net.onnx> [K=8] --tail-guard   # 尾段（worker 就地前向，池宽 1）\n"
+                             "      selfplay-test <net.onnx> --stall-guard      # 交付环满 ⇒ 补场重试（曾停在 9/12）\n"
+                             "      selfplay-test <net.onnx> --emit-throw-guard # 交付抛异常必须可捕获（不是 terminate）\n"
                              "      --workers（worker 线程数，0 = 硬件并发数）/ --pool（池宽，见 `selfplayPooled`）\n"
-                             "      --cpu-rows（待服行数 ≤ N 就走 CPU 会话；⚠️ 用**同一份存档**、K=1 时断言\n"
-                             "                 分流与不分流逐位相同 —— 本地/CUDA 守卫都靠这条压分流管线）\n"
                              "      必须排**最后**，且一次只能给一个。\n");
         return 2;
     }
     const std::string ts = argv[1];
     int workers = 0; // 0 = 硬件并发数（库默认）
+    bool sweep_mode = false; // `--sweep [sims] [n_seed]`
+    int sweep_sims = 96;
+    int sweep_seeds = 1;
     std::size_t pool = 0; // 0 = 不测池化路径（`> 0` ⇒ 跑 `selfplayPooled`，池宽 = 这个值）
-    int cpu_rows = 0;   // > 0 ⇒ **开尾段分流**（窄批走 CPU 会话；`--cpu-rows N`）
-    int cpu_sessions = 2;
-    for (int i = 2; i + 1 < argc; ++i)
+    bool tail_guard = false;       // `--tail-guard`：尾段（worker 就地前向）与逐场单跑逐位比
+    bool stall_guard = false;      // `--stall-guard`：交付环满 ⇒ 补场重试
+    bool emit_throw_guard = false; // `--emit-throw-guard`：交付异常必须可捕获
+    // ⚠️ 一次扫完**所有**旗标，且**只在 `--` 开头的参数上认**（位置参数跳过）：
+    //    · 原版 `break` 在第一个旗标处 ⇒ 只能给一个旗标（实测把守卫坑了：想同时给 `--pool`
+    //      与 `--tail-guard` 就给不上）；
+    //    · 若把位置参数也当"第一个旗标"，`argc` 会被截到 2 ⇒ `--sweep` 静默退化成普通跑
+    //      （守卫"看起来全过"其实没跑）—— 这是同一处踩过的第二次，所以这次连 `--sweep` 也一起
+    //      收进旗标体系，不再靠 `argv[2]` 兜。
+    int first_flag = -1; // 第一个旗标的下标（位置参数只取它左边；-1 = 没有旗标）
+    for (int i = 2; i < argc; ++i)
     {
-        if (std::strcmp(argv[i], "--workers") == 0)
-        {
-            workers = std::atoi(argv[i + 1]);
-            argc = i; // 旗标及其值不进位置参数
-            break;
-        }
-        if (std::strcmp(argv[i], "--pool") == 0)
+        const std::string a = argv[i];
+        if (a.rfind("--", 0) != 0) { continue; } // 位置参数：由 `argv[2..4]` 直接读
+        if (first_flag < 0) { first_flag = i; }
+        const bool has_val = i + 1 < argc;
+        if (a == "--workers" && has_val) { workers = std::atoi(argv[i + 1]); ++i; }
+        else if (a == "--pool" && has_val)
         {
             pool = static_cast<std::size_t>(std::max(1, std::atoi(argv[i + 1])));
-            argc = i;
-            break;
+            ++i;
         }
-        if (std::strcmp(argv[i], "--cpu-rows") == 0)
+        else if (a == "--sweep")
         {
-            cpu_rows = std::max(1, std::atoi(argv[i + 1]));
-            argc = i;
-            break;
+            sweep_mode = true;
+            if (has_val && argv[i + 1][0] != '-') { sweep_sims = std::atoi(argv[i + 1]); ++i; }
+            if (i + 1 < argc && argv[i + 1][0] != '-') { sweep_seeds = std::atoi(argv[i + 1]); ++i; }
+        }
+        else if (a == "--stall-guard") { stall_guard = true; }
+        else if (a == "--tail-guard") { tail_guard = true; }
+        else if (a == "--emit-throw-guard") { emit_throw_guard = true; }
+        else
+        {
+            std::fprintf(stderr, "⚠️ 不认识的旗标：%s（忽略）\n", a.c_str());
         }
     }
-    if (argc > 2 && std::strcmp(argv[2], "--sweep") == 0)
+    argc = first_flag < 0 ? argc : first_flag; // 位置参数只取旗标之前那几个
+    if (sweep_mode)
     {
-        sweep(ts, argc > 3 ? std::atoi(argv[3]) : 96, argc > 4 ? std::atoi(argv[4]) : 1, workers);
+        sweep(ts, sweep_sims, sweep_seeds, workers);
+        return 0;
+    }
+    if (stall_guard)
+    {
+        // ⚠️ 小 `sims`：要复现"环满"必须让 **8 场**在那 1.5 s 的交付窗口里跑完（`D = 8S = 8`）
+        deliveryGuard(ts, 8);
+        std::fprintf(stderr, "✅ 交付环守卫全过\n");
+        return 0;
+    }
+    if (emit_throw_guard)
+    {
+        emitThrowGuard(ts, 8);
+        std::fprintf(stderr, "✅ 交付异常守卫全过\n");
         return 0;
     }
     const std::size_t K = argc > 2 ? static_cast<std::size_t>(std::atoi(argv[2])) : 1;
@@ -342,11 +513,9 @@ int main(int argc, char **argv)
 
     // 造局面（与采集/门禁**同一个入口**）。
     std::vector<BattleContext> battles;
-    std::vector<std::uint64_t> seeds;
     for (std::size_t j = 0; j < K; ++j)
     {
-        seeds.push_back(static_cast<std::uint64_t>(j));
-        battles.push_back(buildBattle(seeds[j], MonsterEncounter::CULTIST, 4, ascensionOf(seeds[j])));
+        battles.push_back(buildBattle(j, MonsterEncounter::CULTIST, 4, ascensionOf(j)));
     }
 
     SelfplayConfig cfg;
@@ -354,18 +523,13 @@ int main(int argc, char **argv)
     cfg.z_spec = "enginenorm";
     cfg.device = "cpu";
     cfg.sims = sims;
+    cfg.sims_cheap_frac = 0.0; // 逐位对拍要的是精确 sims（头文件默认是生产的两档预算）
     cfg.max_steps = 40;
-    cfg.threads = 1;
     cfg.pool = static_cast<int>(K); // 池宽 = 任务数 ⇒ 整表一次全开（这条路的语义）
     cfg.workers = workers;
     cfg.c_puct = 1.5;
     cfg.q_init = 0.0;
-    // **尾段分流**（`--cpu-rows N`）：待服行数 ≤ N 时交给 CPU 会话（见 `collect/selfplay.h`）。
-    // ⚠️ 这里主会话与 CPU 会话**同一份存档、同一个 EP**（都 CPU、intra 都是 1）⇒ 分流只该换"哪条
-    //    线程算"，**不该换一个字节** ⇒ K=1 时守卫顺手断言这一点（见 ③）。
-    cfg.model_path_cpu = cpu_rows > 0 ? ts : std::string();
-    cfg.cpu_rows = cpu_rows;
-    cfg.cpu_sessions = cpu_sessions;
+    cfg.model_path_cpu = tail_guard ? ts : std::string();
 
     // 池形状自述：K ≤ workers 时每线程一棵（与"一棵树一条线程"同形）；否则每线程持 k 棵并肩。
     const int hw = static_cast<int>(std::max(1u, std::thread::hardware_concurrency()));
@@ -377,23 +541,37 @@ int main(int argc, char **argv)
     // **池化路径**：池宽 < 任务数 ⇒ 走"跑完一场立刻补一场"（生产形状）。池宽 1 的断言最强（逐位）。
     if (pool > 0)
     {
-        checkPooled(battles, seeds, cfg, pool);
+        checkPooled(battles, cfg, pool);
         std::fprintf(stderr, "✅ 池化路径全过（池宽 %zu / 任务数 %zu）\n", pool, K);
+        return 0;
+    }
+    // ③ 尾段（worker 就地前向）：池宽 1 ⇒ 首次交付后由 CPU 会话接手；同存档同 EP、批恒 1 行
+    //    ⇒ 逐场必须与单跑逐位相同。
+    if (tail_guard)
+    {
+        if (K < 2) { fail("--tail-guard 需要 K ≥ 2（尾段要在首次交付之后才接手）"); }
+        SelfplayConfig tail_cfg = cfg;
+        tail_cfg.model_path_cpu = ts;
+        tail_cfg.workers = 1;
+        checkPooled(battles, tail_cfg, 1);
+        std::fprintf(stderr, "✅ 尾段守卫全过（%zu 场，首次交付后由 CPU 会话接手）\n", K);
         return 0;
     }
     // ⓪ **反复调用**（守卫就是这种用法：同一进程里几十次）——它压的是
     //    "前向服务 / `OnnxEvaluator` 的生命周期与清理"这类**只在第 N 次才炸**的问题。
     for (int r = 0; r < reps; ++r)
     {
-        const std::vector<GameOut> tmp = runAll(battles, seeds, cfg);
+        const std::vector<GameOut> tmp = runAll(battles, cfg);
         if (tmp.empty()) { fail("反复调用里有一次一帧都没走"); }
     }
     if (reps > 1) { std::fprintf(stderr, "  ✓ 连续 %d 次调用都正常\n", reps); }
 
     // ① 跑两次，比读数（K=1 应逐位相同；K>1 只保证"两次跑一致"这一层形态）
-    const std::vector<GameOut> a = runAll(battles, seeds, cfg);
+    SelfplayConfig baseline = cfg;
+    baseline.model_path_cpu.clear();
+    const std::vector<GameOut> a = runAll(battles, baseline);
     checkFrames(a, "第一次跑");
-    const std::vector<GameOut> b = runAll(battles, seeds, cfg);
+    const std::vector<GameOut> b = runAll(battles, baseline);
     checkFrames(b, "第二次跑");
     const std::vector<std::string> da = digest(a), db = digest(b);
     if (da != db)
@@ -419,41 +597,6 @@ int main(int argc, char **argv)
     }
     std::fprintf(stderr, "  ✓ 终局读数两次跑一致（%zu 场）\n", a.size());
 
-    // ③ **尾段分流**开着再跑一次：与关着比读数。
-    //    K=1（批恒 1 行、两侧同存档同 EP）⇒ **逐位必须相同**：分流只换"哪条线程算"。
-    //    K>1 ⇒ 分流会改批的划分 ⇒ GEMM 归约顺序变 ⇒ 只管"帧仍然自洽"，不作逐位断言。
-    if (cpu_rows > 0)
-    {
-        const std::vector<GameOut> c = runAll(battles, seeds, cfg);
-        checkFrames(c, "尾段分流");
-        const std::vector<std::string> dc = digest(c);
-        std::size_t diff = 0;
-        for (std::size_t i = 0; i < std::min(dc.size(), da.size()); ++i)
-        {
-            if (dc[i] != da[i])
-            {
-                ++diff;
-            }
-        }
-        const std::string how = "尾段分流（CPU×" + std::to_string(cpu_sessions) + "，≤" +
-                                std::to_string(cpu_rows) + " 行）";
-        if (K == 1)
-        {
-            if (dc != da)
-            {
-                fail(how + "与不分流的读数不同（K=1 时两侧同存档同 EP ⇒ 应当逐位相同；不同 " +
-                     std::to_string(diff) + " 行）");
-            }
-            std::fprintf(stderr, "  ✓ %s 与不分流：%zu 行读数逐位相同（K=1）\n", how.c_str(),
-                         dc.size());
-        }
-        else
-        {
-            std::fprintf(stderr, "  ✓ %s：帧自洽；与不分流比 %zu/%zu 行读数不同（K=%zu，分流改批"
-                                 "划分 ⇒ 归约顺序变，不作逐位断言）\n",
-                         how.c_str(), diff, dc.size(), K);
-        }
-    }
     std::fprintf(stderr, "✅ 全过\n");
     return 0;
 }

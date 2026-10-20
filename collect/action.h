@@ -5,6 +5,12 @@
 //    `unifiedActionCount`）**唯一一份**在 `bindings/slaythespire.h` 的 `sts::py` 里
 //    （那里同时是快照布局的宿主）⇒ 本头不复制它们，实现体里按全限定名引用。
 //
+// ⚠️ 多选屏（`EXHAUST_MANY` / `GAMBLE`）在本层**没有任何特殊处理**：触发它们的遗物 / 药水 /
+//    卡（`GAMBLING_CHIP` / `ELIXIR_POTION` / `GAMBLERS_BREW` / 无色 `PURITY`）由
+//    `scenebuild.cpp` 的 ban 表挡在配方之外（造局面 `BANNED_RELICS` / `BANNED_POTIONS` /
+//    `BANNED_CARDS`；整局每个非战斗动作后 `applyRunBans`）⇒ 防御是**"不让它进局面"**，
+//    不是"进来后就地消化"（2026-10-20 删掉了那套运行时消化，见 `git log`）。
+//
 #ifndef STS_LIGHTSPEED_COLLECT_ACTION_H
 #define STS_LIGHTSPEED_COLLECT_ACTION_H
 

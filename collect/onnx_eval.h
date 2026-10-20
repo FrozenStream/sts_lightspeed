@@ -1,21 +1,3 @@
-//
-// ONNX Runtime 推理器：把 `onnxnet.py` 导出的 `.onnx` 载进 C++，让搜索侧直接调网络。**唯一引擎**。
-//
-// 为什么不链 libtorch/TorchScript：代价是**全链路**的 —— `.pyd` 静态链 `c10.dll`/`torch_cpu.dll`
-// ⇒ 进程里必须先 `import torch`（Windows 加载器在 `PyInit_*` 之前就解析完导入表）、torch 自带一份
-// pybind11 要和子模块抢、构建要 `TORCH_CMAKE_PREFIX`、Executable 还要 `Python.h`/libpython。
-// ORT 这边只有**头 + 一个导入库**，torch 退回训练/导出那侧（旧实现 `torch_eval.*` 已于 2026-10-15 删）。
-// ⚠️ 速度不是动机：实测（同权重、intra=1）batch≥64 两边打平、batch=1 ORT 快 3.8×。
-// ⚠️ 数值**不可能逐位相同**（不同实现的归约顺序不同）：实测 max|Δ| ≈ 3e-7、两个头的 argmax
-//    逐行一致 ⇒ 回归判据是"动作一致 + 容差"，见 `onnxnet.verify()`。
-//
-// 设备：`device` 空/"cpu" = CPU；`cuda[:k]` = CUDA 执行提供者（`k` = 卡号）。⚠️ 要真的用上 GPU，
-// 链接时那份库必须是 **GPU 包**（`onnxruntime-*-gpu_cuda13`），且运行时能找到
-// `onnxruntime_providers_cuda` + 一个匹配的 cuDNN —— 否则 `AppendExecutionProvider_CUDA` 会
-// 落到 CPU 上（本文件的构造里对此**显式失败**，不静默降级；静默降级 = 一轮采集慢 3 倍还查不出原因）。
-//
-// ⚠️ 实现细节藏在 `Impl`（pimpl）：ORT 的头很重，而且**不要**漏进 `net_eval.h` 那条公共调用面。
-//
 #ifndef STS_LIGHTSPEED_ONNX_EVAL_H
 #define STS_LIGHTSPEED_ONNX_EVAL_H
 
@@ -24,7 +6,7 @@
 #include <memory>
 #include <string>
 
-namespace sts::py {
+namespace sts::collect {
 
 /// `eval` 的返回：三段 host 指针（契约见 `net_eval.h`）。
 struct OnnxOut

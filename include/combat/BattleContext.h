@@ -257,13 +257,15 @@ namespace sts {
     Action Actions::BuffEnemy(int idx, int amount) {
         return {[=] (BattleContext &bc) {
             // todo check if alive?
-            bc.monsters.arr[idx].buff<s>(amount);
+            // ⚠️ `.at()`：越界**抛**（见 `MonsterGroup.h` 顶部那段），别用 `[]` 读野内存。
+            bc.monsters.arr.at(idx).buff<s>(amount);
         }};
     }
 
     template <MonsterStatus s>
     Action Actions::DebuffEnemy(int idx, int amount, bool isSourceMonster) {
         return {[=] (BattleContext &bc) {
+            // ⚠️ 同上（觉醒者半死那场就是从这里踩进去的：`Monster::attacked` 的 Hand Drill 分支）。
             bc.debuffEnemy<s>(idx, amount, isSourceMonster);
         }};
     }
@@ -285,7 +287,9 @@ namespace sts {
     template <MonsterStatus s>
     void BattleContext::debuffEnemy(int idx, int amount, bool isSourceMonster) {
         // todo poison and snake skull
-        Monster &e = monsters.arr[idx];
+        // ⚠️ `.at()`：越界**抛**（`arr[-1]` 读的是 `BattleContext` 前面那些字段的内存，不是数组外的
+        //    空洞 ⇒ 会读出"看起来活着"的怪）。这里就是 2026-10-16 采集段错误的踩下去那一行。
+        Monster &e = monsters.arr.at(idx);
 
         if (e.hasStatus<MS::ARTIFACT>()) {
             e.decrementStatus<MS::ARTIFACT>();

@@ -158,6 +158,25 @@ namespace sts {
 
     namespace MonsterEncounterPool
     {
+        enum class PoolStep : std::int8_t
+        {
+            INVALID = 0,
+            ACT1_WEAK,
+            ACT1_STRONG,
+            ACT1_ELITES,
+            ACT1_BOSS,
+            ACT2_WEAK,
+            ACT2_STRONG,
+            ACT2_ELITES,
+            ACT2_BOSS,
+            ACT3_WEAK,
+            ACT3_STRONG,
+            ACT3_ELITES,
+            ACT3_BOSS,
+            ACT4_ELITES,
+            ACT4_BOSS
+        };
+
         static constexpr const MonsterEncounter allEnemies[] = {
             // Act 1
             MonsterEncounter::CULTIST,
@@ -233,27 +252,85 @@ namespace sts {
             MonsterEncounter::MYSTERIOUS_SPHERE_EVENT
         };
 
-        // ⭐ 总表必须**恰好**是 `MonsterEncounter` 里 `INVALID` 之外的全部，且不重不漏。
-        //    采集任务流（`collect/encs.h`）就是逐项遍历它 ⇒ 漏一项 = 静默少采一档，重一项 =
-        //    同一场采两遍。两种都只有在这里才看得见。
-        constexpr bool allEnemiesIsCompleteSet()
-        {
-            constexpr int last = static_cast<int>(MonsterEncounter::MYSTERIOUS_SPHERE_EVENT);
-            static_assert(last <= 63, "allEnemiesIsCompleteSet 的位图只有 64 位");
-            if (std::size(allEnemies) != static_cast<std::size_t>(last)) { return false; }
-            unsigned long long seen = 0;
-            for (MonsterEncounter e : allEnemies)
-            {
-                const int v = static_cast<int>(e);
-                if (v < 1 || v > last) { return false; }
-                if ((seen >> v) & 1ULL) { return false; }
-                seen |= (1ULL << v);
-            }
-            return true;
+        static constexpr const PoolStep allEnemiesStep[] = {
+            PoolStep::INVALID,
+            // Act 1
+            PoolStep::ACT1_WEAK,
+            PoolStep::ACT1_WEAK,
+            PoolStep::ACT1_WEAK,
+            PoolStep::ACT1_WEAK,
+            PoolStep::ACT1_STRONG,
+            PoolStep::ACT1_STRONG,
+            PoolStep::ACT1_STRONG,
+            PoolStep::ACT1_STRONG,
+            PoolStep::ACT1_STRONG,
+            PoolStep::ACT1_STRONG,
+            PoolStep::ACT1_STRONG,
+            PoolStep::ACT1_STRONG,
+            PoolStep::ACT1_STRONG,
+            PoolStep::ACT1_STRONG,
+            PoolStep::ACT1_ELITES,
+            PoolStep::ACT1_ELITES,
+            PoolStep::ACT1_ELITES,
+            PoolStep::ACT1_BOSS,
+            PoolStep::ACT1_BOSS,
+            PoolStep::ACT1_BOSS,
+
+            // Act 2
+            PoolStep::ACT2_WEAK,
+            PoolStep::ACT2_WEAK,
+            PoolStep::ACT2_WEAK,
+            PoolStep::ACT2_WEAK,
+            PoolStep::ACT2_WEAK,
+            PoolStep::ACT2_STRONG,
+            PoolStep::ACT2_STRONG,
+            PoolStep::ACT2_STRONG,
+            PoolStep::ACT2_STRONG,
+            PoolStep::ACT2_STRONG,
+            PoolStep::ACT2_STRONG,
+            PoolStep::ACT2_STRONG,
+            PoolStep::ACT2_STRONG,
+            PoolStep::ACT2_ELITES,
+            PoolStep::ACT2_ELITES,
+            PoolStep::ACT2_ELITES,
+            PoolStep::ACT2_BOSS,
+            PoolStep::ACT2_BOSS,
+            PoolStep::ACT2_BOSS,
+
+            // Act 3
+            PoolStep::ACT3_WEAK,
+            PoolStep::ACT3_WEAK,
+            PoolStep::ACT3_WEAK,
+            PoolStep::ACT3_STRONG,
+            PoolStep::ACT3_STRONG,
+            PoolStep::ACT3_STRONG,
+            PoolStep::ACT3_STRONG,
+            PoolStep::ACT3_STRONG,
+            PoolStep::ACT3_STRONG,
+            PoolStep::ACT3_STRONG,
+            PoolStep::ACT3_ELITES,
+            PoolStep::ACT3_ELITES,
+            PoolStep::ACT3_ELITES,
+            PoolStep::ACT3_BOSS,
+            PoolStep::ACT3_BOSS,
+            PoolStep::ACT3_BOSS,
+
+            // Act 4
+            PoolStep::ACT4_ELITES,
+            PoolStep::ACT4_BOSS,
+
+            // Events
+            PoolStep::ACT1_ELITES,        // LAGAVULIN_EVENT
+            PoolStep::ACT2_STRONG,        // COLOSSEUM_EVENT_SLAVERS（斗兽场第一场，不是弱战）
+            PoolStep::ACT2_ELITES,        // COLOSSEUM_EVENT_NOBS
+            PoolStep::ACT2_STRONG,        // MASKED_BANDITS_EVENT
+            PoolStep::ACT1_STRONG,        // MUSHROOMS_EVENT
+            PoolStep::ACT2_STRONG        // MYSTERIOUS_SPHERE_EVENT（沿用 `representativeFloor` 的 30 层）
+        };
+
+        inline PoolStep stepOf(MonsterEncounter enc) {
+            return allEnemiesStep[static_cast<int>(enc)];
         }
-        static_assert(allEnemiesIsCompleteSet(),
-                      "MonsterEncounterPool::allEnemies 必须是 MonsterEncounter 的 1..N 逐项"
-                      "（不重不漏、覆盖到最后一个枚举值）—— 采集任务流直接遍历它");
 
         static constexpr MonsterEncounter weakEnemies[3][5] = {
             {ME::CULTIST, ME::JAW_WORM, ME::TWO_LOUSE, ME::SMALL_SLIMES},

@@ -29,7 +29,7 @@
 
 #include <onnxruntime_cxx_api.h>
 
-namespace sts::py
+namespace sts::collect
 {
     namespace
     {
@@ -46,6 +46,14 @@ namespace sts::py
             return cuda;
         }
 
+        /// 进程级 ORT 环境：Session 可以多开，Env 只该有一个（ORT 的推荐用法）。
+        /// 每个 `OnnxEvaluator` 再建一个 Env 会多出独立的全局线程池/日志状态。
+        Ort::Env &sharedOrtEnv()
+        {
+            static Ort::Env env{ORT_LOGGING_LEVEL_WARNING, "sts"};
+            return env;
+        }
+
         /// Windows 的 `Ort::Session` 要 `wchar_t` 路径（`ORTCHAR_T`）。
         std::basic_string<ORTCHAR_T> toOrtPath(const std::string &p)
         {
@@ -59,7 +67,6 @@ namespace sts::py
 
     struct OnnxEvaluator::Impl
     {
-        Ort::Env env{ORT_LOGGING_LEVEL_WARNING, "sts"};
         Ort::Session session{nullptr};
         std::vector<std::string> in_names_s, out_names_s;
         std::vector<const char *> in_names, out_names;
@@ -74,6 +81,8 @@ namespace sts::py
         : impl_(std::make_unique<Impl>())
     {
         Impl &m = *impl_;
+        // ⚠️ 必须先建 Env：CUDA EP 注册会取默认 logger，而 logger 是 Env 构造时注册的。
+        Ort::Env &env = sharedOrtEnv();
         Ort::SessionOptions so;
         // ⚠️ 与 torch 侧同一条教训：默认按 `nproc` 起线程池，而 cgroup 常远小于 `nproc`
         //    ⇒ 小批前向下线程池同步开销压倒计算（实测 25×）。生产值 = 1。
@@ -110,7 +119,7 @@ namespace sts::py
         //    `Session(env, path, so)` 自己处理路径，Windows 上要 `wchar_t`。
         try
         {
-            m.session = Ort::Session(m.env, toOrtPath(path).c_str(), so);
+            m.session = Ort::Session(env, toOrtPath(path).c_str(), so);
         }
         catch (const std::exception &e)
         {
@@ -177,11 +186,21 @@ namespace sts::py
         // （"首次前向后定义"），`NNEval::start()` 会读这两个值。
         const auto pa_shape = m.outs[0].GetTensorTypeAndShapeInfo().GetShape();
         const auto ps_shape = m.outs[1].GetTensorTypeAndShapeInfo().GetShape();
-        if (p_act_dim <= 0) { p_act_dim = static_cast<int>(pa_shape.back()); }
-        if (p_sel_dim <= 0) { p_sel_dim = static_cast<int>(ps_shape.back()); }
+        if (p_act_dim <= 0)
+        {
+            p_act_dim = static_cast<int>(pa_shape.back());
+        }
         else if (static_cast<int>(pa_shape.back()) != p_act_dim)
         {
             throw std::runtime_error("存档的动作头宽度变了（换错存档？）");
+        }
+        if (p_sel_dim <= 0)
+        {
+            p_sel_dim = static_cast<int>(ps_shape.back());
+        }
+        else if (static_cast<int>(ps_shape.back()) != p_sel_dim)
+        {
+            throw std::runtime_error("存档的选牌头宽度变了（换错存档？）");
         }
         const auto m3 = clock::now();
         auto add = [](std::atomic<double> &a, clock::time_point b, clock::time_point c)

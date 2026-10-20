@@ -62,7 +62,7 @@ std::vector<Case> cases()
     std::vector<Case> v;
     for (MonsterEncounter e : MonsterEncounterPool::allEnemies)
     {
-        const int fl = representativeFloor(e);
+        const int fl = floorForStep(MonsterEncounterPool::stepOf(e));
         for (std::uint64_t s : {std::uint64_t{0}, std::uint64_t{1}, std::uint64_t{7}})
         {
             v.push_back({s, e, fl});
@@ -262,7 +262,7 @@ void checkTrend()
     const int floors[4] = {4, 20, 37, 50};
     double deckMean[4] = {0, 0, 0, 0};
     double relicMean[4] = {0, 0, 0, 0};
-    const int nSeeds = 32;
+    const int nSeeds = 256;
     for (int i = 0; i < 4; ++i)
     {
         for (int s = 0; s < nSeeds; ++s)
@@ -276,6 +276,11 @@ void checkTrend()
         deckMean[i] /= nSeeds;
         relicMean[i] /= nSeeds;
     }
+    // 先印读数再断言：判据红了要能直接看出是哪一档塌了。
+    std::fprintf(stderr,
+                 "  层数→均值：牌组 %.1f→%.1f→%.1f→%.1f 张、遗物 %.1f→%.1f→%.1f→%.1f 件（各 %d seed）\n",
+                 deckMean[0], deckMean[1], deckMean[2], deckMean[3], relicMean[0], relicMean[1],
+                 relicMean[2], relicMean[3], nSeeds);
     for (int i = 1; i < 4; ++i)
     {
         TEST_ASSERT(deckMean[i] > deckMean[i - 1]);

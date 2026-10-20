@@ -53,14 +53,19 @@ namespace sts::collect
         // 终局判定（`Term::is_win` 是它的 bool 投影，丢掉"未决"这一档）。评估要区分"打输"与
         // "到步数上限还没分胜负" ⇒ 留原始 `Outcome`。
         Outcome outcome = Outcome::UNDECIDED;
+        // 搜索预算读数（评估/对照用；不进分片、不影响训练）。
+        std::int64_t transitions = 0; // 已执行的转移数（树内推进 + rollout 各算 1）
+        std::int64_t rollouts = 0;    // 评估 rollout 次数（MCTS 的 sims 也按一次 rollout 计）
+        std::int64_t decisions = 0;   // 决策点数（实际执行的动作数）
+        // 任务号：无序交付时回调按完成序到达，评估侧靠它回填 `got[task]`。
+        std::size_t task = 0;
     };
 
-    // ── 两个采集器共用的工具（定义在 `selfplay.cpp`）───────────────────────────────
+    // ── 两个采集器共用的工具（定义在 `collect_util.cpp`）────────────────────────────
     //
-    // ⚠️ 只**声明**在这儿：改动实现只重编 `selfplay.cpp` 一处（本头的其它消费者不受影响）。
-    // 等第三个消费者出现再抽成自己的 `.cpp`。
+    // ⚠️ 只**声明**在这儿：改动实现只重编 `collect_util.cpp` 一处（本头的其它消费者不受影响）。
 
-    // 终局读数（`t_win/t_hp/t_max_hp/t_turn/t_enemy_cur_hp/t_enemy_max_hp/t_escore`；列名与 `zspec.Terminal` 同序）。
+    // 终局读数（`t_win/t_hp/t_max_hp/t_turn/t_enemy_cur_hp/t_enemy_max_hp`；列名与 `zspec.Terminal` 同序）。
     Term readTerm(const BattleContext &b);
 
     // 该决策点的观测（`snapshotOf` 的原样输出，归一化在那边做）。

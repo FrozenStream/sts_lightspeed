@@ -27,7 +27,7 @@ void search::BattleScumSearcher2::search(int64_t simulations) {
     g_debug_scum_search = this;
 
     if (isTerminalState(*rootState)) {
-        auto evaluation = evaluateEndState(*rootState);
+        auto evaluation = evalFnc(*rootState);
         outcomePlayerHp = rootState->player.curHp;
         bestActionSequence = {};
 
@@ -68,6 +68,7 @@ void search::BattleScumSearcher2::step() {
 
 //            edgeTaken.action.printDesc(std::cout, curState) << std::endl;
             edgeTaken.action.execute(curState);
+            ++transitionCount;
 
             actionStack.push_back(edgeTaken.action);
             searchStack.push_back(&edgeTaken.node);
@@ -82,6 +83,7 @@ void search::BattleScumSearcher2::step() {
 
 //            edgeTaken.action.printDesc(std::cout, curState) << std::endl;
             edgeTaken.action.execute(curState);
+            ++transitionCount;
 
             actionStack.push_back(edgeTaken.action);
             searchStack.push_back(&edgeTaken.node);
@@ -90,7 +92,7 @@ void search::BattleScumSearcher2::step() {
 }
 
 void search::BattleScumSearcher2::updateFromPlayout(const std::vector<Node *> &stack, const std::vector<Action> &actionStack, const BattleContext &endState) {
-    const auto evaluation = evaluateEndState(endState);
+    const auto evaluation = evalFnc(endState);
 
     ++playoutCount;
     if (endState.outcome == Outcome::PLAYER_VICTORY) {
@@ -176,6 +178,7 @@ void search::BattleScumSearcher2::playoutRandom(BattleContext &state, std::vecto
 //        action.printDesc(std::cout, state) << std::endl;
         actionStack.push_back(action);
         action.execute(state);
+        ++transitionCount;
 
         tempNode.edges.clear();
     }

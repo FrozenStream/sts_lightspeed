@@ -272,6 +272,9 @@ void checkFifthMonster()
 // ── 5. `expandChildren` == 「枚举 + 逐个 clone/execute/编码」（MCTS 每步展开都走它）────
 // 它若与手工路径有差，搜索会在**没有任何报错**的情况下走到别的分支 ⇒ 三项逐位对上：
 // 下标序列、孩子快照、终局标记。
+// ⚠️ 孩子不该落在多选屏（`EXHAUST_MANY` / `GAMBLE`）上：触发物（`GAMBLING_CHIP` /
+//    `ELIXIR_POTION` / `GAMBLERS_BREW` / 无色 `PURITY`）被 `scenebuild` 的 ban 表挡在
+//    造局面之外，`buildBattle` 的牌组/遗物/药水都过那道表 ⇒ 这里测到的局面本来就碰不到。
 void checkExpandChildren(const std::vector<Row> &rows)
 {
     int n = 0;
