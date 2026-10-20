@@ -1,13 +1,15 @@
 # 远端环境（seetacloud）
 
 
-⚠️ **换/新实例要走的四步**（少一步就 import 不到扩展）：
+⚠️ **换/新实例要走的五步**（少一步就 import 不到扩展）：
 1. `tar` 推源码 + `json/` + `pybind11/`（这两份不在 `sync.sh` 的同步清单里）；
-2. 配 **必须显式给 Python**：这台机上 `python3` 不在 PATH，`find_package(Python)` 会失败 ⇒
-   `cmake -S . -B build -DTORCH_CMAKE_PREFIX=$(/root/miniconda3/bin/python -c 'import torch;print(torch.utils.cmake_prefix_path)') -DPython_EXECUTABLE=/root/miniconda3/bin/python`
-   （128 核宿主上 `-j64` 编完只要 **22 s**）；
-3. 写 `.pth`：`echo <repo>/build > /root/miniconda3/lib/python3.12/site-packages/sts_lightspeed_build.pth`；
-4. 传 checkpoint（`data/*.pt` 不在仓库里，要从现役那台 `cat` 过来）。
+2. 搭 **ONNX Runtime**：`./_ort.sh wheel`（或 `tgz`）⇒ `ORT_HOME=/root/autodl-tmp/ort/onnxruntime`；
+3. 配 **必须显式给 Python**：这台机上 `python3` 不在 PATH，`find_package(Python)` 会失败 ⇒
+   `cmake -S . -B build -DCMAKE_BUILD_TYPE=Debug -DORT_HOME=/root/autodl-tmp/ort/onnxruntime -DPython_EXECUTABLE=/root/miniconda3/bin/python`
+   （128 核宿主上 `-j64` 编完只要 **1 min** 量级）；
+   ⚠️ 加上一个 Release 构建给门控/生产口径：同一条命令换 `-B build-onnx -DCMAKE_BUILD_TYPE=Release`。
+4. 写 `.pth`：`echo <repo>/build > /root/miniconda3/lib/python3.12/site-packages/sts_lightspeed_build.pth`；
+5. 传 checkpoint（`data/*.pt` 不在仓库里，要从现役那台 `cat` 过来）。
 
 🚨 **GPU 红线（实测踩过）**：**别开 N 个进程、每个各自带一个 CUDA 上下文**。
 32 进程 × 各自 CUDA 上下文把那台容器**直接弄断**（SSH `Connection refused` ~10 分钟）。要在 GPU 上跑，
@@ -95,6 +97,16 @@ $PY _chk_all.py                                        # 守卫总检（engine �
 `slaythespire._slaythespire`。
 
 
+⚠️ **本机（Windows）配置要用 `-T ClangCL`**（2026-10-15 踩过）：本仓源码里全是中文注释，而
+`cl.exe` 默认按**系统代码页**（这台机 = GBK）解释源文件 ⇒ 某些多字节序列会把后面的字符/换行吃掉，
+报出一堆看不懂的语法错（实测 `collect/snapshot.h` 报 30+ 条 `push` 相关的 C3867/C2059）。
+`clang-cl` 按 UTF-8 读 ⇒ 没事。完整命令：
+
+```powershell
+cmake -S . -B build -T ClangCL -DCMAKE_BUILD_TYPE=Debug      # ONNX 库默认找 third_party/onnxruntime
+cmake --build build --config Debug -j 16
+```
+
 ⚠️ **本机（Windows / MSBuild）增量构建会谎报"已最新"（2026-10-11 踩过，代价一整天）**：`cmake --build`
 报成功、`.pyd` 被重链、stubgen 也跑，但某个 `.cpp` **从未进过编译器**（当时是 `collect/scenebuild.cpp`
 —— 于是所有"6 组 × 300 seed 对账"其实都是拿**同一个旧 `.pyd` 自己跟自己比**，A/B 永远全同）。
@@ -114,6 +126,17 @@ cmake --build build --config Debug --target slaythespire -- /v:diag |
 （比 `.obj` 还旧）⇒ MSBuild 判定"没变"、不重编，于是**恢复后跑出来的还是注入版的行为**（当场骗过我一轮：
 "恢复后 golden 仍红"）。恢复后必须 `(Get-Item x.cpp).LastWriteTime = Get-Date`（或先删 `build/<目标>.dir`
 再编）。**判据**：恢复后先 `Get-FileHash` 对回原值，再看产物 mtime 是否真的刷新。
+
+⚠️ **远端：`_push.sh` / `scp` 会带 mtime ⇒ 换来"新旧源码混编"（2026-10-16 踩，症状是 import 就报
+`undefined symbol`）**：本地的 `collect/teacher.cpp` mtime 是 01:31，远端 `.o` 是 03:05 ⇒ 推过去之后
+make 认为"源码比产物旧"、**不重编**，于是远端同时存在「新 `selfplay.cpp`（已删 `snapshotObs` 包装）+
+旧 `teacher.cpp.o`（还在调那个包装）」⇒ `.so` 里留一个未定义符号。⚠️ **共享库链接默认允许未定义符号**
+⇒ `cmake --build` 一路 `EXIT=0`，直到 `import slaythespire` 才炸（而 `selfplay-test` 是 exe，链接时就报，
+所以"守卫全过"也不能证明 `.so` 没问题）。
+判据/解法：推完先看时间戳
+（`ls -la collect/<file>.cpp build/CMakeFiles/<目标>.dir/collect/<file>.cpp.o`），
+**推完一律 `find collect bindings include src apps -name '*.cpp' -o -name '*.h' | xargs touch` 再编**；
+或者推完先 `python -c "import slaythespire"`（1 秒，比编 5 分钟便宜）。
 
 ### 换实例清单（2026-09-30 westb / 32 核纯 CPU 实测）
 
@@ -156,8 +179,9 @@ ssh -p $PORT $HOST "cd $D && $PY _chk_all.py"              # 期望 13/13（数�
 里有「K=4 并肩 == 4×K=1 逐位相同」一条，它在本地 100% 通过（`max|Δπ_n| = 0`）、在远端
 **THE_GUARDIAN seed=0 会翻**；后来本地也开始翻（同机上 12 次里 1 次，第 17 帧 `a_idx` 由 `0`
 变 `1`、`max|Δn| = 1`、总访问数 139/139 不变）。
-两侧都是纯 CPU（`device="cpu"`）、同一个 TorchScript 存档、同一份 `build_battle` ——
-差别只在 **BLAS/OpenMP 的归约顺序**（批尺寸一变就变）。树叶深、平局多（精英/Boss）的局面才翻。
+两侧都是纯 CPU（`device="cpu"`）、同一份网络存档（当时是 TorchScript，现为 `.onnx`）、同一份
+`build_battle` —— 差别只在 **BLAS/OpenMP 的归约顺序**（批尺寸一变就变）。树叶深、平局多
+（精英/Boss）的局面才翻。
 ⇒ **跨树合批不可能逐位等于逐棵跑**，这条断言已从守卫里删除（它挡的"多树串状态"改由 ② +
 `_chk_threads` + C++ 侧的 `engine-test search` / `golden_selfplay` 承担 —— Python 侧的
 `_chk_search.py` 与其参照物 `azsearch.SearchTree` 2026-10-11 已删）。教训：**不要把"只有同机才成立"的等价性写成断言** ——

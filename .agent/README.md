@@ -29,11 +29,16 @@
 cmake --build build --config Release -j 16          # 全量 7 目标
 build/Release/engine-test.exe                       # 引擎/动作/观测布局
 build/Release/scene-test.exe                        # 场景缩放、banned 列表
-build/Release/selfplay-test.exe <net.ts>            # K=1 12 帧逐位对拍（可复现性）
-build/Release/selfplay-test.exe <net.ts> --sweep 24 # 12 个遭遇（含 act4）扫一遍
+build/Release/selfplay-test.exe <net.onnx>            # K=1 逐位对拍（可复现性）
+build/Release/selfplay-test.exe <net.onnx> --sweep 24 # 12 个遭遇（含 act4）扫一遍
+build/Release/selfplay-test.exe <net.onnx> 8 4 1 --tail-guard  # 尾段（worker 就地前向）⇒ 与逐场单跑逐位相同
+build/Release/selfplay-failure-test.exe               # 异常传播/线程收尾 + 落盘外壳（**不需要存档**）
+build/Release/net-test.exe <net.onnx> 64 20 cpu       # 前向引擎本身（不加搜索）
 ```
 
-⚠️ 跑 `*-test.exe` 前把 `.venv\Lib\site-packages\torch\lib` 与 python DLL 目录放进 `PATH`（否则 `0xC0000135`）。
+⚠️ 网络存档 = **ONNX**（C++ 侧只有这一个引擎）；由 `onnxnet.ensure_onnx(<权重.pt>, <设备>)` 导出，
+放在 `data/onnx/`。跑 `*-test.exe` **不需要**任何 `PATH` 调整（只依赖 `onnxruntime.dll`，CMake 会把它
+拷到产物旁边）—— 以前要"先把 `torch/lib` 放进 `PATH`"那条**已随 libtorch 一起作废**。
 ⚠️ **守卫的价值 = 被运行的概率**：掩码口径错了 4 天没人发现，就是因为没有对应守卫。改动引擎/布局/动作空间后**务必跑一遍**。
 
 ## 代码注释约定
