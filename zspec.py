@@ -18,20 +18,26 @@ import numpy as np
 class Terminal(NamedTuple):
     """**一场**战斗的终局记录：字段名 == 落盘列名、顺序 == 列序（双方唯一的契约，C++ 也指这里）。
 
-    类型按字段本义：计数 / HP / 回合是 `int`，比例与引擎分是 `float`。**只有一种粒度**：
-    一场一份；落盘里逐行存只是广播（`CollectData.seg` 正是靠"同一场逐行相同"认出场的）。
+    类型按字段本义：计数 / HP / 回合是 `int`（落盘 `i4`），胜负是 `bool`（落盘 `|b1`）。**只有一种
+    粒度**：一场一份；落盘里逐行存只是广播（`CollectData.seg` 正是靠"同一场逐行相同"认出场的）。
+
+    ⚠️ 引擎终局分（旧 `t_escore`）**已不在落盘里**（v3 删列）⇒ 读侧算不出 `enginenorm`
+    （`z_of` 会响亮拒绝）；搜索侧不受影响，那边由 C++ 现算（`zvalue.cpp`）。
     """
-    t_win: int          # 1 = 玩家胜
+    t_win: bool         # 玩家胜（落盘 1 字节 `|b1`）
     t_hp: int           # 玩家剩余 HP
     t_max_hp: int
     t_turn: int         # 结束时的回合数
-    t_enemy: float      # 敌方剩余总血量占比
-    t_escore: float     # 引擎终局分（`BattleScumSearcher2::evaluateEndState`）
+    t_enemy_cur_hp: int # 敌方剩余总血量（**原始值**；占比由读侧现算）
+    t_enemy_max_hp: int # 敌方总血量上限
 
 
 Z_COLS = Terminal._fields
 
 DEFAULT_SPEC = "hp"
+
+# ⚠️ `enginenorm` 仍留在下面两张表里（**采集/搜索侧**由 C++ 现算引擎分，`zvalue.cpp`），但
+#    **读侧算不出它**：v3 落盘里没有 `t_escore` 列（`z_of` 会响亮拒绝）。训这一档得先把那列加回去。
 
 # 各口径下 `z` 的**尺度**（标准差）。PUCT 的 `c_puct` 是针对 Q 的尺度定的常数，换口径
 # **必须**一起换 —— 同样的 `c_puct` 在不同口径下的等效探索强度不同（踩过一次）。
@@ -49,7 +55,6 @@ Z_MID = {"enginenorm": 0.786, "hp": 0.0, "hp_turn": 0.0}
 
 C_PUCT_BASE = 1.5       # `c_puct` 的基准值
 C_PUCT_REF = 0.618      # 基准值是在这个 Q 尺度下定的（`hp` 口径）
-
 # 根节点 Dirichlet 噪声的**总浓度**（不是每动作的 α：α = 总浓度 / 合法动作数）。
 # 10.83 = AGZ 论文的 0.03 × 围棋的 ~361 个合法动作 —— 也就是说**它跟着动作数走**，
 # 换引擎（本引擎每帧合法动作 mean 4.7）必须重标定，别照抄。
@@ -85,7 +90,11 @@ def z_of(cols: dict[str, np.ndarray], spec: str) -> np.ndarray:
     max_hp = np.maximum(1.0, np.asarray(cols["t_max_hp"]))
     ratio = np.asarray(cols["t_hp"]) / max_hp
     if spec == "enginenorm":
-        return np.asarray(cols["t_escore"]) / (100.0 * max_hp)
+        # v3 落盘删了 `t_escore`（引擎终局分）⇒ 读侧**算不出**这一档。响亮拒绝，别拿 0 兜底
+        # （那会让 z 静默变成"全败"）。要训这一档就得先把那一列加回 `shardio.h` 的列清单。
+        raise ValueError(
+            "值口径 enginenorm 要 `t_escore` 列，而 v3 落盘里没有它（搜不到引擎分）"
+            "—— 读侧请用 hp / hp_turn；要训 enginenorm 得先把 `t_escore` 加回 `collect/shardio.h`")
     if spec == "hp":
         return np.where(win, ratio, -1.0)
     if spec == "hp_turn":

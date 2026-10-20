@@ -68,7 +68,7 @@ def writer(tag: str, sub: str | None = None, on: bool = True, out_dir: str | Non
     """拿一个 `Run`；同一个 `tag/sub` 复用，**关掉或建不出来 ⇒ None**。
 
     参数：
-      `tag`  运行名 —— 用权重名/数据名（`runtime.ckpt_name` 那套）⇒ 目录与存档对得上
+      `tag`  运行名 —— 用**产物名**（数据目录名 / 权重文件名主干）⇒ 目录与存档对得上
       `sub`  子目录，用 `seed<k>` ⇒ 多种子并排可比；`None` = 不分子目录
       `on`   调用方自己的开关（`train(record=…)`）；`False` ⇒ 不落盘
       `out_dir`  根目录（`None` = `data/runs`）

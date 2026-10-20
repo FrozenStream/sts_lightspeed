@@ -4,7 +4,8 @@
   1. 数据缓存目录（以前默认写 `%TEMP%`，导致缓存**不在工作区里**，拷项目会丢数据）
   2. 并行 worker 数（本机 8 物理核调的默认值不该带到大机器上）
   3. multiprocessing 启动方式（POSIX 能用 `fork`，Windows 只能 `spawn`，差价 ~6 秒/次）
-  4. 缓存名拼装（`cache_name` / `cache_path` / `recipe_kv`）与**脚本 CLI**（`cli_for`）
+  4. 产物命名与配方校验（`artifact_dir` / `check_recipe` / `cache_path` / `recipe_kv`）与
+     **脚本 CLI**（`cli_for`）
 
 **这里没有旋钮**：下面全是纯函数，参数由调用方显式给（`workers(v)` / `mp_context(mp_start)` /
 `cache_path(name, cache_dir)` / `cli_for(fn)` / …）。配方（架构/优化/口径/线程/设备/打点）是
@@ -16,9 +17,10 @@
 """
 import argparse
 import inspect
+import json
 import multiprocessing as mp
 import os
-import re
+import shutil
 import sys
 
 # ---- 控制台编码：本地 Windows 默认是 GBK，而这套脚本要打 ✅/❌ 这类符号 ----
@@ -37,9 +39,94 @@ HERE = os.path.dirname(os.path.abspath(__file__))
 # ⚠️ 以前默认写 `%TEMP%` / `/tmp`，所以缓存**不在工作区里** —— 拷项目到别的机器会静默丢数据。
 DATA_DIR = os.path.join(HERE, "data")
 
+# ── 产物**名字**：只有一个固定默认名，名字里**不带配方**（2026-10-15 定案）──────────────────
+#
+# 为什么把"名字 = 完整配方"反过来：那样每加一个旋钮就长十几字符，而单段上限 255（ext4/NTFS）
+# ⇒ 实测生产配方**第 2 轮就 271 字符**（`start_seed<8位>` 与 `net<上一轮权重名首段>_wfp<指纹>`
+# 一起进来），`os.makedirs` 在采集第一步抛 `ENAMETOOLONG` —— 报错点离原因很远，且每加一个
+# 旋钮就复现一次。**现在**：名字 = `<kind>`（数据目录）/ `<数据目录名>.pt`（权重），
+# 配方改由**产物内部**承载，唯一性靠"同名 ⇒ 必须同配方，否则炸"：
+#
+#   · 数据目录：`<目录>/_recipe.json` —— 复用前逐字比对（`check_recipe`），不一致当场报错
+#   · 权重：存档里的 `recipe`（`ckpt.save(..., recipe=…)`；`config`/`z_spec`/`metrics` 本来就在）
+#
+# ⚠️ 代价（明确接受）：**从文件名看不出配方**，要看 `_recipe.json` / 存档 / 运行日志
+#    （采集与训练都会把完整配方打一行）。⚠️ 也**不再有自定义名字**（`--name` 已删）：
+#    要落到别的位置就用 `--cache`（采集）/ `out` 位置参数（训练）显式给路径。
+RECIPE_FILE = "_recipe.json"
+
+
+def artifact_dir(kind: str, cache_dir: str | None = None) -> str:
+    """采集产物的**默认目录**：`<cache_dir>/<kind>`（`kind` 如 `spencs` / `encdata_teacher`）。
+
+    名字里**不带任何配方**（见上面那段）；`--cache` 给了就用给的路径（不变）。
+    """
+    return os.path.join(cache_dir or DATA_DIR, kind)
+
+
+def check_recipe(dir_path: str, recipe: dict, *, kind: str) -> None:
+    """目录 ↔ 配方的**一致性闸**（数据产物复用的唯一判据）。
+
+    四种情形，各自响亮：
+
+    | 目录状态 | 行为 |
+    |---|---|
+    | 不存在 / 没有分片 | 建目录 + 写 `<dir>/_recipe.json`（**采集前就写**：半路崩了也留下证据） |
+    | 有 `_recipe.json` 且逐字相同 | 放行（调用方随后按"已有分片"走复用） |
+    | 有 `_recipe.json` 但不同 | **报错**，并列出**哪几项不同**（对症才能改） |
+    | 有分片却没有 `_recipe.json` | **报错**（旧命名时代的目录 / 手造的目录 ⇒ 换 `--cache` 或删掉） |
+
+    `recipe` 必须是 JSON 口径的基本类型（`recipe_kv()` 出来的就是）⇒ 比对 = 逐字相等。
+    """
+    path = os.path.join(dir_path, RECIPE_FILE)
+    if os.path.exists(path):
+        with open(path, encoding="utf-8") as f:
+            old = json.load(f)
+        if old.get("recipe") == recipe and old.get("kind") == kind:
+            return
+        bad = sorted(k for k in set(old.get("recipe") or {}) | set(recipe)
+                     if (old.get("recipe") or {}).get(k) != recipe.get(k)
+                     or (k == "kind" and old.get("kind") != kind))
+        diff = {k: ((old.get("recipe") or {}).get(k), recipe.get(k)) for k in bad}
+        raise RuntimeError(
+            f"{dir_path} 里那份产物的配方与本次**不一致**（{RECIPE_FILE}）：\n"
+            f"  不同项 {diff}\n"
+            f"  ⇒ 同名目录不许装两份配方：换个 `--cache`，或删掉这个目录重采")
+    shards = [n for n in os.listdir(dir_path) if n.endswith(".bin")] if os.path.isdir(dir_path) else []
+    if shards:
+        raise RuntimeError(
+            f"{dir_path} 里有 {len(shards)} 个分片却没有 {RECIPE_FILE} ⇒ "
+            f"**配方无从校验**（旧命名时代的产物 / 手造的目录）：换个 `--cache`，或删掉它重采")
+    os.makedirs(dir_path, exist_ok=True)
+    with open(path, "w", encoding="utf-8") as f:
+        json.dump({"kind": kind, "recipe": recipe}, f, ensure_ascii=False, indent=1, sort_keys=True)
+
+
+def reuse_shards(kind: str, shard_dir: str, recipe: dict) -> list[str] | None:
+    """采集产物的**复用/新建唯一入口**：清空壳 → 配方闸（`check_recipe`）→ 命中就返回已有分片。
+
+    返回 `None` = 需要真采（此刻目录与 `_recipe.json` 都已就位）。命中与“本次配方”各打一行 ——
+    调用方（`chain.sh` 那类）靠“产物目录 …”那一行拿数据位置，不能静默。
+    """
+    # 函数内导入：`collect_io` 拉 numpy，而本模块被所有脚本 import ⇒ 别把 numpy 挂在 import 期。
+    from collect_io import list_shards
+
+    if os.path.isdir(shard_dir) and not list_shards(shard_dir):
+        shutil.rmtree(shard_dir, ignore_errors=True)  # 上次中断留下的空壳（有目录、没分片）
+    check_recipe(shard_dir, recipe, kind=kind)
+    got = [str(p) for p in list_shards(shard_dir)]
+    if got:
+        print(f"产物目录 {shard_dir} 复用已有 {len(got)} 个分片", flush=True)
+        return got
+    print(f"配方 {json.dumps(recipe, ensure_ascii=False, sort_keys=True)}", flush=True)
+    return None
+
 
 def cache_path(name, cache_dir=None):
-    """缓存文件全路径（父目录建好）。`cache_dir=None` = 仓库内 `data/`。"""
+    """产物全路径（父目录建好）。`cache_dir=None` = 仓库内 `data/`。
+
+    ⚠️ 本函数是**全部产物路径的唯一拼装点**（数据目录与权重都走它）⇒ 路径口径只在这里写一遍。
+    """
     d = cache_dir or DATA_DIR
     os.makedirs(d, exist_ok=True)
     p = os.path.join(d, name)
@@ -47,50 +134,12 @@ def cache_path(name, cache_dir=None):
     return p
 
 
-def cache_name(name, kind, n, sims=None, **extra):
-    """数据**目录名**的唯一拼装点：`[<自定义名字>_]<kind>_n<N>_s<SIMS>_<k><v>...`。
+def recipe_kv(fn, kw, drop=()) -> dict:
+    """按 `fn` 的签名挑出**全部**参数（含默认值、签名顺序）—— 产物的**配方**就是它。
 
-    `name` = 人给的名字（采集器 `--name`，如 `imit`），进名字最前面；不给就只剩 `<kind>_…`。
-    ⚠️ 采集产物是**目录**（分片在里头，见 `collect_io.list_shards`），不是单个文件。
-    ⚠️ 为什么要收口（2026-09-25）：`data/` 里曾同时躺着 `walkdata_n800_s4000`（无版本）、
-    `walkdata_v3_n800_s4000`、`_walkv5_n500`（前导下划线、版本在中间）—— **光看名字分不出
-    哪个是现役**，而它们相差一个数量级算力。
-    ⚠️ `extra` **不排序**（2026-10-02）：顺序 = 调用方给的顺序 = 配方签名顺序，名字读起来就是配方。
-    """
-    parts = ([name] if name else []) + [kind, f"n{n}"]
-    if sims is not None:
-        parts.append(f"s{sims}")
-    parts += [f"{k}{_fmt_val(extra[k])}" for k in extra]
-    return "_".join(parts)
-
-
-def dataset_tag(cache) -> str:
-    """数据名进**别的**文件名时只留自定义部分：`_n<数字>` 之前的一切（`[<名字>_]<kind>`）。
-
-    ⚠️ 抄全名会撞长度上限：实测自对弈那支（数据名 156 字符）嵌进权重名后到 **320 字符**，
-    超 255 ⇒ 训练跑完、存盘那一步才 `ENAMETOOLONG`。名字本身就是一份完整配方，不必再抄一遍。
-    没带名字时退化成 `<kind>`（旧名如 `encdata_sp_s500_sample` 无 `_n<数字>` ⇒ 原样返回）。
-    """
-    stem = os.path.splitext(os.path.basename(cache))[0]
-    m = re.match(r"^(.*?)_n\d+", stem)
-    return m.group(1) if m else stem
-
-
-def net_tag(ckpt_path) -> str:
-    """权重名进**别的**文件名时只留自定义部分：第一段（`train.py --name` 给的名字，如 `sp1`）。
-
-    没给 `--name` 时第一段就是它自己的数据段，照样能指认（只是长一点）。
-    ⚠️ 自定义名字因此是**唯一身份**：一个名字只能对应一个网，重名会静默指向错的那份。
-    """
-    return os.path.basename(ckpt_path).split("-")[0].removesuffix(".pt")
-
-
-def recipe_kv(fn, kw, drop=()):
-    """按 `fn` 的签名挑出**全部**参数（含默认值、签名顺序），供文件名拼装。
-
-    口径同 `train.ckpt_params`：名字本身就是一份完整配方，不看文件、不查日志就能复现
-    ⇒ **不做手工白名单**，只按 `drop` 除外。`kw` 里缺一个签名参数就当场 `KeyError`
-    —— 新增配方参数而忘了进名字 = 两种数据同名，那种错静默且代价高。
+    ⚠️ 它现在进的是 `_recipe.json` 与存档的 `recipe`（不再是文件名）。
+    **不做手工白名单**，只按 `drop` 除外；`kw` 里缺一个签名参数就当场 `KeyError` ——
+    新增一个会改数据的旋钮而忘了进配方 = 两种产物同名，那种错静默且代价高。
     """
     return {k: kw[k] for k, p in inspect.signature(fn).parameters.items() if k not in drop}
 
@@ -146,57 +195,6 @@ def cli_for(fn, description=""):
                            type=ann if (ann is not inspect.Parameter.empty and callable(ann))
                            else (str if prm.default is None else type(prm.default)))
     return p
-
-
-def _fmt_val(v) -> str:
-    """参数值 → 名字里的一段。布尔写 `1`/`0`（`True` 里的大小写当文件名不好看）；
-    浮点用 `%g`（`0.001` / `0.2` / `1`）；其余 `str`。`None` 写 `none` 而不是 `None`。"""
-    if isinstance(v, bool):
-        return "1" if v else "0"
-    if isinstance(v, float):
-        return f"{v:g}"
-    return "none" if v is None else str(v)
-
-
-# `short_name` 显示时**丢掉**的段：结构 / 优化数值。它们几乎每次实验都是同一组默认值，
-# 全显示会让评测表的列宽到几百字符。`z_spec` / `soft_target` / `soft_temp` **必须留着** ——
-# 那是各条臂之间真正不同的东西：丢了它们，软目标与硬目标在表里会同名。
-DISPLAY_DROP = ("hidden", "depth", "arch", "sel_arch", "pair", "dropout", "lr", "wd",
-                "batch", "loss_chunk", "threads", "device")
-
-
-def short_name(path) -> str:
-    """完整权重名 → **显示用短名**：`<自定义名字>-<数据集名>-e<轮数>` + 非超参段。
-
-    完整名（约两百字符、含全部超参）永远在文件上；显示只求「一行放得下且互不重名」。
-    没有轮数段（`epochs=None`）时原样返回。
-    """
-    stem = os.path.splitext(os.path.basename(path))[0]
-    parts = stem.split("-")
-    cut = next((i for i, p in enumerate(parts) if re.fullmatch(r"e\d+", p)), None)
-    if cut is None:
-        return stem
-    keep = [p for p in parts[cut + 1:] if not p.startswith(DISPLAY_DROP)]
-    return "-".join(parts[:cut + 1] + keep)
-
-
-def ckpt_name(cache, epochs=None, name=None, cache_dir=None, **extra):
-    """权重文件名 = `<自定义名字>-<数据引用>-<各项参数>.pt`（含目录）。
-
-    段间用**连字符**：数据引用自己就用下划线（`imit_encdata`），两个分隔符不打架。
-    `name` 是调用方给的自定义名字（`train.py --name`，如 `imit` / `sp1`）；不给就只剩数据引用。
-    轮数 `e<N>` 排在参数最前，其余**按调用方给的顺序**逐个写上（`hidden128-lr0.001`）。
-
-    调用方只管把参数给全，不区分默认值 —— 名字本身就是一份完整配方，不看文件就能复现。
-    ⚠️ 数据引用只留**自定义部分**（`dataset_tag`）：抄数据的全名会在自对弈那支超 255 字符。
-    ⚠️ 以前权重叫 `az_boss.pt` / `n1_s0.pt` —— 拿到权重**看不出**它是哪份数据、怎么训的，
-    对不上就没法复现。名字里带数据引用 ⇒ 可反查；`--out` 只当逃生口。
-    """
-    parts = [p for p in (name, dataset_tag(cache)) if p]
-    if epochs is not None:
-        parts.append(f"e{epochs}")
-    parts += [f"{k}{_fmt_val(v)}" for k, v in extra.items()]
-    return cache_path("-".join(parts) + ".pt", cache_dir)
 
 
 def _cpu_quota():
@@ -258,9 +256,10 @@ def mp_context(mp_start=None):
     return mp.get_context()
 
 
-# torch 线程数 = **入口脚本的形参**（`--train-threads` / `--rollout-threads`），这里不持有。
+# torch 线程数 = **入口脚本的形参**（`--train-threads`），这里不持有。
+# 采集侧的前向在 C++ 的 ONNX Runtime 里，intra-op 固定 1（每个 worker 一个会话），没有对应旋钮。
 #
 # ⚠️ 为什么必须固定：线程数会改变 GEMM 的浮点归约顺序，而这个搜索对微小扰动**混沌敏感**
 # （见 .agent/notes.md：把 `3*sqrt(2)` 换成差 1 ULP 的字面常量，教师胜率动了 7.5pp）。
-# 训练与 rollout 各自固定，且**父进程串行与 worker 必须用同一个 rollout 值**，
-# 否则「并行 == 串行」这个复现前提不成立。两个默认都是 **1**（线程数是配方的一部分）。
+# 训练与 rollout 各自固定，且**父进程串行与 worker 必须用同一个值**，
+# 否则「并行 == 串行」这个复现前提不成立。默认 **1**（线程数是配方的一部分）。

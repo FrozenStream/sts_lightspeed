@@ -1,7 +1,7 @@
 """训练 AZNet。本文件只做训练：采集在 `collect_teacher.py` / `collect_selfplay.py`（都在 C++ 里生产）。
 
 用法：
-  python train.py train <数据路径> [epochs] [权重输出] [--lr 1e-3 …]
+  python train.py train <数据路径> [epochs] [权重输出] [--lr 1e-3 …] [--mix <路径>=<权重> …]
   python train.py seeds <数据路径> [种子数] [--seed0 3 --save 'data/n1_s{seed}.pt']
 （配方 flag 清单见 `python train.py train --help`）
 
@@ -10,7 +10,7 @@
 契约：
   · 策略目标用硬 argmax（`--soft-target` 只为复现旧结果保留；理由与数字见 `.agent/notes.md`）。
   · `seeds` 默认不存盘，给了 `--save` 才按种子保存。
-  · **建网超参不是配方**：固定在 `aznet.py` 的模块常量里 ⇒ 无 CLI flag、不进权重名（换值 = 换网）；
+  · **建网超参不是配方**：固定在 `aznet.py` 的模块常量里 ⇒ 无 CLI flag、不进名字（换值 = 换网）；
     存档仍记 `config`，`check_init()` 拿它挡旧架构的权重。
   · 配方（优化、值口径、线程、设备、打点）只来自 `train()` 的形参，不读环境变量：
     flag 由 `recipe_flags()` 从签名派生（连默认值一起），参数由 `train_kwargs()` 原样
@@ -19,6 +19,13 @@
   · 种子纪律：训练段、采集段、自对弈段都不得与评估段（从 `collect.EVAL_SEED0` = 1e8 起）重叠。
   · 数据格式 = `collect.CollectData` 认的采集产物（**分片目录**）。自对弈与教师数据同格式，
     可以直接混训。
+  · **产物名不带配方**（2026-10-15）：权重名 = `<数据目录名>.pt`（`out` 位置参数可显式给路径），
+    **没有 `--name`**；配方（数据 + 混训 + 全部超参）写进**存档内部**的 `recipe` 字段
+    ⇒ 不看名字也能复现。对应地，采集产物目录是固定的 `<cache-dir>/<kind>` + 目录内
+    `_recipe.json`（见 `runtime` 顶部与 `collect_selfplay`）。
+  · **回放**（`--mix`）：位置参数那份是**本轮**（恒 1.0），`--mix` 的权重都相对它 ⇒
+    `--mix 上一轮=0.6 --mix 再上一轮=0.36` ≈ 50.9%/30.5%/18.5%。一轮的优化步数**不变**
+    （行数 = 本轮的训练行数），所以"挂回放"与"多训几步"不会混在一起。
 """
 import argparse
 import inspect
@@ -36,8 +43,8 @@ from tqdm import tqdm
 import ckpt
 import metrics
 from aznet import AZNet, POLICY_DIM, net_cfg
-from collect import CollectData
-from runtime import ckpt_name, mp_context, short_name
+from collect import CollectData, CollectMix
+from runtime import cache_path, mp_context
 from zspec import DEFAULT_SPEC
 
 # ---------------------------------------------------------------- 配方
@@ -48,7 +55,7 @@ HELP: dict[str, str] = {
     "wd": "权重衰减",
     "batch": "batch 大小",
     "epochs": "训练轮数",
-    "z_spec": "值口径：enginenorm / hp / hp_turn",
+    "z_spec": "值口径：hp / hp_turn / enginenorm（⚠️ enginenorm 要 `t_escore` 列，v3 落盘没有 ⇒ 只能采集、不能训）",
     "soft_target": "策略目标用软分布（默认硬 argmax）",
     "soft_temp": "软目标的温度：π**(1/T)，<1 更尖、>1 更平（仅 --soft-target 下生效）",
     "pi_weight": "π 损失的逐行权重口径：none（默认，每行等权）/ advantage（max(0, z−V̂) 归一）",
@@ -66,8 +73,33 @@ PI_WEIGHT_MODES: tuple[str, ...] = ("none", "advantage")
 PI_OBJECTIVE_MODES: tuple[str, ...] = ("off", "pg")
 # 子命令里不属于配方的名字：这些不进 `train()`。新增一个 flag 而忘了登记（或者名字拼错），
 # 都会在 `train(**kw)` 那一步当场 TypeError —— 就是要它炸。
-JOB_KEYS = frozenset({"mode", "cache", "pos_epochs", "out", "name", "job_timeout",
-                      "n_seeds", "seed0", "save", "mp_start"})
+JOB_KEYS = frozenset({"mode", "cache", "pos_epochs", "out", "job_timeout",
+                      "n_seeds", "seed0", "save", "mp_start", "mix"})
+
+
+def parse_mix(specs: list[str] | None) -> list[tuple[str, float]]:
+    """`--mix <路径>=<权重>` → `[(路径, 权重)]`；权重是**相对本轮（恒 1.0）**的比。
+
+    ⚠️ 分隔符是 `=`：路径里不会有它（`:` 会有 —— 挂载点 / 驱动器号）。写法不对当场退出。
+    """
+    out: list[tuple[str, float]] = []
+    for s in specs or []:
+        path, sep, w = s.rpartition("=")
+        if not sep or not path:
+            raise SystemExit(f"❌ --mix 要写成 <路径>=<权重>：{s!r}")
+        try:
+            wv = float(w)
+        except ValueError:
+            raise SystemExit(f"❌ --mix 的权重不是数：{s!r}")
+        if not wv > 0:
+            raise SystemExit(f"❌ --mix 的权重必须为正（0 = 别给这份）：{s!r}")
+        out.append((path, wv))
+    return out
+
+def load_data(cache: str, mix: list[str] | None):
+    """位置参数那份（**本轮**）+ `--mix` 各份 → 训练用的数据集（单份 = `CollectData`，逐位不变）。"""
+    parts = [(cache, 1.0)] + parse_mix(mix)
+    return (CollectData(cache) if len(parts) == 1 else CollectMix(parts)), parts
 
 
 def recipe_flags(sp: argparse.ArgumentParser) -> None:
@@ -100,9 +132,8 @@ NET_KEYS = tuple(net_cfg())
 
 
 def _stem(path: str | None) -> str:
-    """取**显示用短名**当 TensorBoard 运行名（完整名带全部超参，做目录名太长）。"""
-    return short_name(path or "")
-    return os.path.splitext(os.path.basename(path or ""))[0]
+    """取**目录名/文件名主干**当 TensorBoard 运行名（名字本身就是短的，直接用它）。"""
+    return os.path.splitext(os.path.basename(os.path.normpath(path or "")))[0]
 
 
 # ------------------------------------- 训练阶段的任务级并行
@@ -138,10 +169,12 @@ def _first_nonfinite(net: AZNet) -> str | None:
 
 
 def save_ckpt(net: AZNet, path: str, *, cfg: dict[str, Any], z_spec: str,
-              **metrics: float) -> str:
+              recipe: dict | None = None, **metrics: float) -> str:
     """把权重和建网配置写进同一个文件（`ckpt.save`），返回存档路径。
 
     `net` 必须在 CPU 上；`cfg` 是 `net_cfg()` 的结果；`**metrics` 是训练指标，写进存档备查。
+    `recipe` = 本次训练的**完整配方**（数据 + 混训权重 + 全部超参）：权重名不再带配方（`runtime`
+    顶部那段）⇒ 它就是"不看名字也能复现"的凭据（连同 `cfg` / `z_spec` / `metrics`）。
     含 NaN/Inf 的权重会拒绝存盘并抛 `RuntimeError`：这种权重形状合法、能 `strict=True`
     加载，但评估恒为 0%，属于不报错的坏结果，必须在源头拦住。
     """
@@ -152,12 +185,12 @@ def save_ckpt(net: AZNet, path: str, *, cfg: dict[str, Any], z_spec: str,
         raise RuntimeError(msg)
 
     return ckpt.save(path, net.state_dict(), cfg,
-                      space=POLICY_DIM, z_spec=z_spec,
+                      space=POLICY_DIM, z_spec=z_spec, recipe=recipe,
                       metrics={k: float(v) for k, v in metrics.items()})
 
 
 # ---------------------------------------------------------------- 训练
-def train(data: CollectData, seed: int = 0, val_frac: float = 0.2,
+def train(data, seed: int = 0, val_frac: float = 0.2,
           verbose: bool = True, tag: str | None = None, *,
           init: str | None = None,
           lr: float = 1e-3, wd: float = 1e-4, epochs: int = 64, batch: int = 256,
@@ -170,7 +203,8 @@ def train(data: CollectData, seed: int = 0, val_frac: float = 0.2,
     """训练一个网络，返回 `(net, metrics)`（`train_ce`/`val_ce`/`train_r2`/`val_r2`）。
 
     参数：
-      `data`     `collect.CollectData`（采集产物 = 分片**目录**）
+      `data`     `collect.CollectData`（采集产物 = 分片**目录**）或 `collect.CollectMix`
+                 （多份**加权混训** = 回放；两者同一套出口，行序走 `data.epoch_rows`）
       `seed`     决定留出集划分与初始化；同数据同种子必然得到同一条轨迹
       `val_frac` 留出集比例（按场划分，同一场不会跨两侧）
       `verbose`  只控制台读数；进度条与 TensorBoard 打点不受它影响
@@ -184,7 +218,9 @@ def train(data: CollectData, seed: int = 0, val_frac: float = 0.2,
 
     配方（键名与默认值都在 `train()` 的签名里）：
       `lr/wd/batch/epochs`  优化参数
-      `z_spec`  值口径（`zspec`）：`enginenorm`（默认）/ `hp` / `hp_turn`
+      `z_spec`  值口径（`zspec`）：`hp`（默认）/ `hp_turn` / `enginenorm`。
+                    ⚠️ `enginenorm` 要 `t_escore` 列，而 v3 落盘已删该列（`z_of` 会响亮拒绝）
+                    ⇒ 现在只有采集/搜索侧能用它。
       `soft_target`  策略目标用软分布还是硬 argmax；默认硬 argmax（软目标更差的证据见
                      `.agent/notes.md`）
       `soft_temp`  软目标的温度：先 `π**(1/T)` 再归一化，<1 更尖、>1 更平；只在
@@ -330,16 +366,17 @@ def train(data: CollectData, seed: int = 0, val_frac: float = 0.2,
         return ce, vm, 1.0 - vm / max(vv, 1e-12)
 
     idx_tr = torch.nonzero(tr_t).squeeze(1)
-    n = len(idx_tr)
     # 进度条始终开着（作业跑在 `script` 的 pty 里）；`verbose` 只控制台读数。
     last_loss = None
     gstep = 0            # 全局 batch 序号，即 `points.jsonl` 里 `train/loss` 的横轴
     pg = tqdm(total=epochs, desc=f"训练 seed={seed}", unit="ep",
               dynamic_ncols=True, mininterval=0.4)
     for ep in range(epochs):
-        perm = idx_tr[torch.randperm(n, device=idx_tr.device)]
-        for s in range(0, n, batch):
-            idx = perm[s:s + batch]
+        # 行序由数据集给（单份 = `idx_tr` 的一遍乱序，逐位同旧行为；混训 = 按权重分位，
+        # 且**长度 = 本轮的训练行数** ⇒ 挂回放不改优化步数）。
+        order = data.epoch_rows(idx_tr, ep, seed)
+        for s in range(0, len(order), batch):
+            idx = order[s:s + batch]
             # 逐批取行 + 逐批转换，再整批上卡；`dev="cpu"` 时 `.to(dev)` 不做任何事。
             b = data.batch(idx, soft_target, soft_temp)
             ob, pa, ma = b["obs"].to(dev), b["pi_act"].to(dev), b["m_act"].to(dev)
@@ -382,7 +419,7 @@ def train(data: CollectData, seed: int = 0, val_frac: float = 0.2,
             lv = float(loss.detach())
             if not math.isfinite(lv):
                 msg = (f"训练发散：loss={lv} 非有限（epoch {ep + 1}/{epochs}，第 "
-                       f"{s // batch + 1}/{-(-n // batch)} 个 batch，"
+                       f"{s // batch + 1}/{-(-len(order) // batch)} 个 batch，"
                        f"上一个有限 loss={last_loss}）；"
                        f"先调小 --lr（当前 {lr:g}）并检查数据。batch={batch} device={dev}")
                 metrics.fault("loss_nonfinite", msg, step=gstep)
@@ -433,7 +470,7 @@ def train(data: CollectData, seed: int = 0, val_frac: float = 0.2,
 
 
 # ---------------------------------------------------------------- 评估
-def check_determinism(net: AZNet, data: CollectData, n: int = 32) -> bool:
+def check_determinism(net: AZNet, data, n: int = 32) -> bool:
     """同一批输入连算两次必须完全一致，用来挡「返回的网络还停在 train 模式」（dropout 开着）。
 
     先查非有限值再比一致性：`NaN != NaN`，发散时也会返回 False，会被误报成「没切 eval」。
@@ -521,14 +558,19 @@ def build_parser() -> argparse.ArgumentParser:
         # 作业环境（不是配方）：看门狗阈值。
         sp.add_argument("--job-timeout", type=float, default=1800.0,
                         help="看门狗阈值（秒）；0 = 关")
+        # 回放（加权混训）：不属于 `train()` 的配方（它是**数据集**的形状，不是优化参数）⇒
+        # 在这里注册、由 `load_data()` 拼数据集；权重进存档的 `recipe`（名字里不带）。
+        sp.add_argument("--mix", action="append", default=None, metavar="路径=权重",
+                        help="回放数据：可重复；权重是相对本轮的比（本轮 / 位置参数恒 1.0）。"
+                             "例：--mix data/r4=0.6 --mix data/r3=0.36 ⇒ 50.9/30.5/18.5%%"
+                             "（⚠️ `%%` 是为了转义：argparse 会把 help 里的 `%%` 当格式符）")
         return sp
 
     # 未知子命令和未知 flag 都会在这里报错（退出码 2），不会悄悄当成别的任务跑。
     add("train", "训练一个网络并存盘",
         ("cache", dict()), ("pos_epochs", dict(type=int, nargs="?", default=None)),
-        ("out", dict(nargs="?", default=None)),
-        ("--name", dict(default=None,
-                        help="权重名里的自定义前缀：`<名字>-<数据引用>-<全部配方参数>.pt`")),
+        ("out", dict(nargs="?", default=None,
+                     help="权重路径（不给 = `<数据目录名>.pt`，落在 `data/`）")),
         with_epochs=False)
     add("seeds", "多种子训练（并行）",
         ("cache", dict()), ("n_seeds", dict(type=int, nargs="?", default=3)),
@@ -536,20 +578,6 @@ def build_parser() -> argparse.ArgumentParser:
         ("--save", dict(default=None, help="路径模板，用 {seed} 占位；不设则不存盘")),
         ("--mp-start", dict(default=None, help="multiprocessing 启动方式（fork/spawn）")))
     return p
-
-
-def ckpt_params(kw: dict[str, Any]) -> dict[str, Any]:
-    """进权重文件名的**全部配方参数**（含默认值），按 `train()` 签名的顺序。
-
-    全塞的理由：名字本身就是一份完整配方，不看文件、不查 TB 就能复现。
-    建网超参（`hidden/depth/arch/sel_arch/dropout`）**不在签名里** ⇒ 天然不进名字。
-    三个例外：`epochs` 由 `ckpt_name` 单独排（紧跟数据集名，位置固定）；`record` / `record_dir`
-    是读数落盘（改不了权重）；`init` 是**路径**（进名字会带分隔符，也能把名字撑到几百字符）。
-    代价：续训出来的权重与从零训出来的**同名**，后者会覆盖前者。
-    """
-    return {k: kw[k] for k, p in inspect.signature(train).parameters.items()
-            if p.kind is inspect.Parameter.KEYWORD_ONLY
-            and k not in ("epochs", "record", "record_dir", "init")}
 
 
 def check_init(path: str, kw: dict[str, Any]) -> None:
@@ -576,20 +604,29 @@ def run_train(a: argparse.Namespace) -> None:
         kw["epochs"] = a.pos_epochs          # 位置参数优先于签名里的默认值
     if kw.get("init"):
         check_init(kw["init"], kw)
-    out = a.out or ckpt_name(a.cache, kw["epochs"], name=a.name, **ckpt_params(kw))
-    data = CollectData(a.cache)
+    data, parts = load_data(a.cache, a.mix)
+    if len(parts) > 1:                       # 回放：把**各份与占比**打进日志（可复现的台账）
+        print(f"  {data.summary()}", flush=True)
+        for p, w in parts[1:]:
+            print(f"    + {p}（权重 {w:g}）", flush=True)
+    # 权重路径：默认 = `<数据目录名>.pt`（落在 `data/`）——**名字不带配方**（见 `runtime` 顶部）。
+    # 配方（数据 + 混训 + 全部训练超参）写进**存档内部**的 `recipe` ⇒ 不看名字也复得出来。
+    out = a.out or cache_path(f"{_stem(a.cache)}.pt")
+    recipe = {"data": parts, "epochs": kw["epochs"], **kw}
     net, m = train(data, tag=_stem(out), **kw)
     check_determinism(net, data)
     save_ckpt(net, out, cfg=net_cfg(),
-              z_spec=kw["z_spec"], **m)
+              z_spec=kw["z_spec"], recipe=recipe, **m)
     print(f"已保存 {out}  threads={kw['threads']}  "
-          f"device={kw['device']}  batch={kw['batch']}", flush=True)
+          f"device={kw['device']}  batch={kw['batch']}（配方在存档的 recipe 字段里）", flush=True)
 
 
 def run_seeds(a: argparse.Namespace) -> None:
     """`seeds` 子命令：多 seed 并行训练；只有给了 `--save` 才按种子存盘。"""
     kw = train_kwargs(a)
-    tag = _stem(a.cache)        # TensorBoard：一个运行名下面按 seed 分子目录，便于并排比较
+    data, parts = load_data(a.cache, a.mix)
+    # TensorBoard 运行名 = 数据目录名（+ 混训份数，免得两种混法挤进同一个运行目录）。
+    tag = _stem(a.cache) + (f"+mix{len(parts) - 1}" if len(parts) > 1 else "")
     n_seeds, s0 = a.n_seeds, a.seed0 or 0
     save_tpl = a.save or ""
     # 这两项检查都放在读缓存之前：参数不对就不必先花几分钟读 GB 级的缓存。
@@ -603,7 +640,6 @@ def run_seeds(a: argparse.Namespace) -> None:
               f"会把 {n_seeds} 个网络互相覆盖。请写成 '..._s{{seed}}.pt'。", flush=True)
         sys.exit(2)
 
-    data = CollectData(a.cache)
     print(f"样本 {data.n_rows}  段 {data.n_games}  "
           f"threads={kw['threads']}  device={kw['device']}  "
           f"batch={kw['batch']}  lr={kw['lr']:g}  wd={kw['wd']:g}  "
@@ -638,7 +674,8 @@ def run_seeds(a: argparse.Namespace) -> None:
             d = os.path.dirname(out)
             if d:
                 os.makedirs(d, exist_ok=True)
-            save_ckpt(net, out, cfg=cfg_net, z_spec=kw["z_spec"], seed=s, **m)
+            save_ckpt(net, out, cfg=cfg_net, z_spec=kw["z_spec"], seed=s,
+                      recipe={"data": parts, "epochs": kw["epochs"], **kw}, **m)
             print(f"  已保存 {out}  (seed={s})", flush=True)
         print(f"  seed={s}  val_ce={m['val_ce']:.3f} "
               f"val_R2={m['val_r2']:+.3f}", flush=True)

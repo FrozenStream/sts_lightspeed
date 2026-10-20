@@ -10,7 +10,6 @@
 ⚠️ 下划线开头的名字 `import *` 不带，必须单独 import。
 """
 import inspect
-import os
 
 import torch
 import torch.nn as nn
@@ -27,7 +26,7 @@ from azlayout import (INPUT_STATE_CARD_SELECT, P_INPUT_STATE,  # noqa: F401
 # 建网超参。唯一来源：`AZNet` 签名默认值与 `net_cfg()` 都引用它们，别在别处再写这些数字。
 # ⚠️ 五个嵌入宽度直接决定 `in_dim` ⇒ 换值 = 作废旧权重；`hidden` / `depth` / `dropout` 只改容量。
 # ⚠️ 建网超参不进权重名 ⇒ 换容量后新旧权重同名，`check_init` 拦得住续训、拦不住覆盖
-#    ⇒ 换容量必须同时给 `_chain.sh` 的 `LINEAGE`。
+#    ⇒ 换容量必须同时给 `chain.sh` 的 `LINEAGE`。
 # 嵌入宽度。⚠️ 它与 `hidden` 不是一回事：`hidden` 是“算力容量”，嵌入宽度是一个实体的“分辨率”。
 # 基数：牌 742 / 招式 197 / 怪 66 / 遗物 181 / 药水 44。8 维下 742 张牌几乎挤成一点，
 # 而策略头的 `k_hand` 只拿到 `CARD_RANK + HAND_EXTRA_N` 维就决定“打哪张牌”。
@@ -420,7 +419,7 @@ def inference_net(net, intra_threads=1, device=None):
     """推理用的前向：`device` 为空 = `net` 本身（就地 CPU 前向）；非空 = 搬上该设备的适配层。
 
     ⚠️ `intra_threads` 必须落到 `torch.set_num_threads`：torch 默认吃满全核，而自对弈是 N 个
-    worker 并行 ⇒ 不设就是 N 倍超订（`rollout_threads` 就是它）。
+    worker 并行 ⇒ 不设就是 N 倍超订（训练侧由 `--train-threads` 管；采集前向在 C++ 里，固定 1）。
 
     ⚠️ `device` 非空时每次调用有 H2D + D2H 两次同步（见 `_Forward`）⇒ 只对**大叶子批**划算。
     ⚠️ 自对弈整段在 C++（`collect/selfplay.cpp` 的 `NNEval` 攒批 + `sts.selfplay_run`）

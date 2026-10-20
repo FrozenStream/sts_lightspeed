@@ -1,39 +1,31 @@
-"""教师采集：`sts.teacher_run` 一个调用（任务表 / 造局面 / 搜索 / 落盘全在 C++），本文件只拼产物名 + 打读数。
+"""教师采集：`sts.teacher_run` 一个调用（任务表 / 造局面 / 搜索 / 落盘全在 C++），本文件只打读数。
 
     python collect_teacher.py --n 32 --sims 3000 [--net-path x.pt] [--cache out]
+
+⚠️ 产物名不带配方（同 `collect_selfplay`，见 `runtime.check_recipe`）：默认目录 = `<cache-dir>/encdata_teacher`，
+   配方写进目录里的 `_recipe.json`，复用前逐字比对。
 """
 import os
-import shutil
 import sys
 import time
 
 import slaythespire as sts
 
-import ckpt
 from collect import CollectData, MAX_STEPS
-from collect_io import list_shards
-from runtime import cache_name, cache_path, cli_for, net_tag
+from runtime import artifact_dir, cli_for, recipe_kv, reuse_shards
 
-# 不进产物名的参数（改了它数据仍逐位相同）。⚠️ 加名字前先问这一句。
-NOT_IN_NAME = ("cache", "cache_dir", "shard_rows", "threads")
+# 产物**种类**（默认目录名 = 它；也是 `_recipe.json` 里的 `kind`）。
+KIND = "encdata_teacher"
 
-
-def default_cache(*, n: int, sims: int, net_path: str = "-", eps: float = 0.0,
-                  start_seed: int = 0, cache_dir: str | None = None, **not_in_name) -> str:
-    """默认产物目录（唯一拼名点）。传入未列入 `NOT_IN_NAME` 的参数 = 有配方参数没进名字 ⇒ 报错。"""
-    stray = sorted(set(not_in_name) - set(NOT_IN_NAME))
-    if stray:
-        raise TypeError(f"{stray} 不是已知的「不进名字」参数：要么拼错，要么得让它进名字")
-    extra = {"net": net_tag(net_path), "wfp": ckpt.read(net_path)["fp"]} if net_path != "-" else {}
-    return cache_path(cache_name(None, "encdata_teacher", n, sims, eps=eps,
-                                 start_seed=start_seed, **extra), cache_dir)
+# 不进**配方**的形参：`cache` / `cache_dir` 是输出路径；`shard_rows` 只改分片粒度；
+# `threads` 只改墙钟（数据逐位相同）；`net_path` **教师采集根本不加载网络**（旧名字里带着它
+# 只是为了"看得出是哪份网"，但教师数据与网无关）⇒ 不进配方。
+RECIPE_DROP = ("cache", "cache_dir", "shard_rows", "threads", "net_path")
 
 
-def _shard_dir(cache: str | None, cache_dir: str | None) -> str:
-    """产物目录（**唯一拼点**）：`--cache` 给的就是目录。"""
-    if cache:
-        return cache
-    return os.path.join(cache_dir or "data", "_teacher_tmp")
+def recipe_of(kw: dict) -> dict:
+    """本次采集的**配方**（写进 `_recipe.json`）：`collect_teacher()` 的全部形参（按 `RECIPE_DROP` 除外）。"""
+    return recipe_kv(collect_teacher, kw, RECIPE_DROP)
 
 
 def collect_teacher(n: int, sims: int, net_path: str = "-", cache: str | None = None,
@@ -42,19 +34,16 @@ def collect_teacher(n: int, sims: int, net_path: str = "-", cache: str | None = 
                     threads: int = 0) -> list[str]:
     """采 `n` × 全表，返回分片路径（产物 = `cache` 目录）。
 
-    `net_path` 只为命名与 `obs_dim`，**不加载权重**；`-` = 不关心名字。
+    `net_path` **不加载权重**（保留只是因为调用方习惯传它；不进配方）。
     `shard_rows` / `threads` 只改分片粒度与墙钟（数据逐位相同）。
     """
+    recipe = recipe_of(locals())
     if sims < 1:
         sys.exit(f"sims 太小：{sims}（教师至少 1）")
-    shard_dir = _shard_dir(cache, cache_dir)
-    if cache and os.path.isdir(shard_dir):
-        got = [str(p) for p in list_shards(shard_dir)]
-        if got:
-            print(f"已缓存到 {shard_dir}（{len(got)} 分片）", flush=True)   # 调用方靠这行拿路径
-            return got
-        shutil.rmtree(shard_dir, ignore_errors=True)
-    os.makedirs(shard_dir, exist_ok=True)
+    shard_dir = cache or artifact_dir(KIND, cache_dir)
+    got = reuse_shards(KIND, shard_dir, recipe)  # 空壳清理 + 配方闸 + 命中复用（各打一行）
+    if got:
+        return got
 
     cfg = sts.TeacherConfig()
     cfg.sims, cfg.max_steps = int(sims), MAX_STEPS
@@ -72,7 +61,7 @@ def collect_teacher(n: int, sims: int, net_path: str = "-", cache: str | None = 
 
 def main() -> int:
     kw = vars(cli_for(collect_teacher, "collect teacher data (all in C++)").parse_args())
-    kw["cache"] = kw["cache"] or default_cache(**kw)
+    kw["cache"] = kw["cache"] or artifact_dir(KIND, kw["cache_dir"])
     print(f"教师采集：{kw['n']} 项 × UCT({kw['sims']}) → {kw['cache']}", flush=True)
     collect_teacher(**kw)
     return 0

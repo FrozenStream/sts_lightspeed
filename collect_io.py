@@ -3,7 +3,7 @@
 
 格式（小端）：
     0   8   magic = "STSSHRD1"
-    8   4   version = 2
+    8   4   version = 3
     12  4   ncols
     16  8   nrows
     24  36*ncols  列目录：[name[16]][dtype[4] 含NUL][width u64][offset u64]
@@ -12,6 +12,18 @@
 ⚠️ 头里**只留这四个数**：段宽（`space`）/ 观测宽度（`obs_dim`）从列目录推（`pi_act` / `obs` 列的
 宽度）；任务名与来源（v1 的 `task` / `src`）训练侧不看 —— 存了就是第二份真相，还会随"换了采集器
 忘了改它"而说谎。⇒ 这三个（`space` / `obs_dim` / `task` / `src`）v2 一律不存。
+
+⚠️ **版本号是硬闸**：`VERSION` 与 `collect/shardio.h` 的 `kShardVersion` 必须**逐字相同**，
+不一致就响亮拒绝（不是静默兼容）。v2→v3 只改了**终局列的口径**（少占 24 字节/行）：
+
+    | 列 | v2 | v3 |
+    |---|---|---|
+    | `t_win` | `i8` | **`|b1`**（就是 `bool`） |
+    | `t_hp` / `t_max_hp` / `t_turn` | `i8` | **`i4`** |
+    | `t_enemy`（占比，f8） | 有 | **删**（改存原始值：`t_enemy_cur_hp` / `t_enemy_max_hp`，`i4`） |
+    | `t_escore`（f8） | 有 | **删**（⇒ 读侧算不出 `enginenorm`，见 `zspec.z_of`） |
+
+⇒ 列名/类型的**唯一来源是 `shardio.h` 的列清单**（`zspec.Z_COLS` 只是它的 Python 影子，两边同序）。
 
 `dtype` 用 numpy 的 `descr` 短码（`<f4` / `<f8` / `<u4` / `<i4` / `<u8` / `<i8` / `|b1`；端序显式写）
 —— 只为让这里一句 `np.memmap` / `np.frombuffer` 就能用。
@@ -32,7 +44,8 @@ from typing import NamedTuple
 import numpy as np
 
 MAGIC = b"STSSHRD1"
-VERSION = 2
+VERSION = 5                             # 新写版本；读侧兼容 v3/v4/v5
+READ_VERSIONS = (3, 4, 5)
 HDR = struct.Struct("<8sIIQ")           # magic, version, ncols, nrows（别的都能从列目录推，见文件头）
 COLDIR = struct.Struct("<16s4sQQ")      # name[16], dtype[4]（含 NUL）, width u64, offset u64
 
@@ -56,6 +69,7 @@ class Shard(NamedTuple):
     path: str
     nrows: int
     cols: dict[str, Col]
+    version: int
 
 
 def _read_head(path: str) -> Shard:
@@ -65,16 +79,15 @@ def _read_head(path: str) -> Shard:
         dir_bytes = fh.read(COLDIR.size * ncols)
     if magic != MAGIC:
         raise ValueError(f"{path}: 不是本采集容器（magic={magic!r}）")
-    if version != VERSION:
-        # ⚠️ v1 的头 56 字节（多 `space`/`obs_dim`/`task`/`src`）⇒ 列偏移全不一样，**不能按新布局读**。
-        raise ValueError(f"{path}: 分片版本 {version}（本代码只认 {VERSION}）—— v1 的头里带"
+    if version not in READ_VERSIONS:
+        raise ValueError(f"{path}: 分片版本 {version}（本代码只认 {READ_VERSIONS}）—— v1 的头里带"
                          f"标识字符串（`task`/`src`），列偏移与 v2 不同 ⇒ 重采一份"
                          f"（教师 30 秒；自对弈看配方）")
     cols: dict[str, Col] = {}
     for k in range(ncols):
         name, dt, width, off = COLDIR.unpack_from(dir_bytes, k * COLDIR.size)
         cols[name.split(b"\0", 1)[0].decode()] = Col(dt.decode().strip("\0"), int(width), int(off))
-    return Shard(path, int(nrows), cols)
+    return Shard(path, int(nrows), cols, int(version))
 
 
 class ShardSet:
@@ -100,8 +113,12 @@ class ShardSet:
 
     @property
     def obs_dim(self) -> int:
-        """观测宽度 = `obs` 列的宽度（头里不存这个数）。"""
-        return self.cols["obs"].width
+        """观测宽度 = `obs_raw`（v3 兼容）/ 各 `obs_*` 块（v4）之和。"""
+        if "obs_raw" in self.cols:
+            return self.cols["obs_raw"].width
+        if "obs" in self.cols:
+            return self.cols["obs"].width
+        return sum(c.width for n, c in self.cols.items() if n.startswith("obs_"))
 
     @property
     def space(self) -> int:
