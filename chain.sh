@@ -27,16 +27,13 @@ PY=/root/miniconda3/bin/python
 NET=data/warm.pt    # 起步权重。**短名是刻意的**：训练产出的名字是整份配方（几百字符）
 ROUNDS=0            # 0 = 一直迭代（停：`STS_SESSION=<会话名> bash _kill.sh`）；也给个上限跑小实验
 DEVICE=cuda         # 采集/训练/门控共用；⚠️ 采集必须单进程（多份 CUDA 上下文踩断过容器）
-ROLLOUT_THREADS=1   # 前向 intra-op 线程（进产物名）；⚠️ 只在 CPU 前向有用（16 核给 12 ⇒ 20.7 场/min，
-                    #   vs 线程=1 时 <13），cuda 上只会跟树线程抢 CPU
 N_PER=32            # 采集：每项场数（**任务表** = `encs` 表项数 × N_PER = 63 × N_PER 场）
                     #   ⚠️ 它同时是**种子段的宽度**（第 i 场用 `start_seed + i`）⇒ 改它 = 改
                     #   `round_seed0` 的段划分（那一轮的开局分布跟着变）。
-SIMS=3000           # 采集：MCTS 预算（**完整档**；见 SIMS_CHEAP / SIMS_FULL_FRAC）
-SIMS_CHEAP=0        # 采集：**便宜档**预算（0 = 关 = 恒 SIMS）。KataGo 的 randomized playout cap：
-                    #   多数决策点跑便宜档、少数跑完整档 ⇒ 同墙钟下"量大 + 少量深标签"，而不是
-                    #   全表同一预算（后者标签量虽大，形状单一）。⚠️ 关着时逐位同旧行为（不动 rng）。
-SIMS_FULL_FRAC=0.25 # 采集：走完整档（SIMS）的决策点比例（仅 SIMS_CHEAP > 0 时生效）
+SIMS=3000           # 采集：MCTS 预算（**完整档**；见 SIMS_CHEAP_FRAC / SIMS_FULL_FRAC）
+SIMS_CHEAP_FRAC=0.83 # 采集：便宜档 = SIMS × 它（max(2, round(·))；0 = 关）。多数决策点跑便宜档、
+                    #   少数（SIMS_FULL_FRAC）跑完整档。⚠️ 关着时逐位同旧行为（不动 rng）。
+SIMS_FULL_FRAC=0.25 # 采集：走完整档（SIMS）的决策点比例（仅 SIMS_CHEAP_FRAC > 0 时生效）
 SP_POOL=512         # 采集：**池宽** = 在飞的场数（跑完一场立刻补一场）。一棵树同时只挂 1 个在飞
                     #   前向请求 ⇒ **批宽 ≤ 池宽**。实测（受控探针：同任务表 2016 场 / sims=200 / workers=14 /
                     #   cuda）：池宽 512 ⇒ **202 s / 均批 79.3**；1024 ⇒ 214 s / 83.6；整表全开 2016 ⇒ 209 s /
@@ -45,18 +42,14 @@ SP_POOL=512         # 采集：**池宽** = 在飞的场数（跑完一场立刻
 SP_WORKERS=14       # 采集：worker 线程数（`collect_selfplay --workers`）。⚠️ 别用"一棵树一条线程"
                     #   （实测 2016 条时 CPU 15.7 核全花在惊群/调度上，GPU 只有 4~11%）。取核数减 2
                     #   （前向服务线程 + 主线程交付各占一个）。树不绑定线程：推一步就回池，谁抢到谁继续。
-SP_BATCH_WAIT=0     # 采集：**攒批**（µs，`collect_selfplay --batch-wait-us`）。⚠️ 只在池子塌了
-                    #   （在飞场数远小于 SP_POOL）时才该开：那时等一等能把批从十几行拉到 60+（实测
-                    #   543→316 s）。池子正常时它是**白等**（池宽 512 等 6 ms → 235 s vs 不等 202 s）。
-                    #   池子塌的根因见 `collect/selfplay.cpp` 的 `selfplayPooled`（树槽/交付槽要分开）。
-SP_BATCH_TARGET=0   # 采集：攒批的"提前发车"阈值（0 = 不设限；攒够这个行数就不等剩余的了）。
-SP_CPU_ROWS=10      # 采集：**尾段（窄批）走 CPU** 的分界（`--cpu-rows`；0 = 关）。一次前向的耗时
-                    #   **几乎与批宽无关**（实测 GPU 批 1 → 0.98 ms、批 256 → 1.41 ms = kernel 派发
-                    #   受限）⇒ 只剩几棵树在飞时每行贵 ~200×：实测一整轮 2411 s 里约 **1877 s** 花在
-                    #   最后 16 场的 1~2 行调用上（GPU 只 40%、14 条 worker 87% 在睡）。CPU 批 1 只要
-                    #   0.40 ms 且**多会话能横向扩**（1/4/8 会话 = 2201/7164/10083 行/s）⇒ 窄批交给它。
-                    #   实测交叉点 ≈ 批 6（单会话）、4 会话下 ≈ 10 行。
-SP_CPU_SESSIONS=4   # 采集：尾段 CPU 会话数（每个 = 一条服务线程 + 一份独立 ONNX 会话）。
+SP_LONG_DECAY=100   # 采集：**长局衰减**的起点步数（`collect_selfplay --long-decay-start`；0 = 关）。
+                    #   ⚠️ `steps` = **决策点数**（出动作/选牌），**不是回合**：`steps=1000` 的场
+                    #   `t_turn≈97` ⇒ 那是**一百来个回合的硬仗**，不是废数据。衰减的含义是"第 100 步之后
+                    #   的研磨步按**便宜档**的深度搜（下限 = SIMS×SIMS_CHEAP_FRAC），不再每步付完整档 3000"
+                    #   ⇒ 不丢帧、也不降到"没搜过"。
+                    #   动机：2016 场那轮 **70% 的墙钟**花在最后 7 场这类场上（3804 步 × ~952 次前向
+                    #   = 3.6M 次；尾段只剩 1~2 条链在走 ⇒ 1056 s），而它们只占 6.6% 的行。
+                    #   配套的**零代价**修法 = 任务序（`collect/encs.h` 的 `encJobs`：逆表序 ⇒ 最磨的先上车）。
 EPOCHS=2            # 训练：轮数
 LR=3e-4             # 续训步长；1e-3 对已收敛的网过大（会把权重从教师分布拽走）
 WORKERS=32          # 训练线程
@@ -84,9 +77,8 @@ GATE_SEED0=100000000  # 门控固定 seed 段（= `collect.EVAL_SEED0`，held-ou
 STAMP="$(date +%m%d_%H%M)"  # 轮次目录名；`STS_STAMP` 可指定（复用已存在的轮次目录）
 
 # `./_start.sh` 只转发 `STS_*`，而上面的旋钮名不带前缀 ⇒ 这一层接进来（空值 = 保持常量）。
-for _k in N_PER SIMS SIMS_CHEAP SIMS_FULL_FRAC SP_POOL SP_WORKERS SP_BATCH_WAIT SP_BATCH_TARGET \
-          SP_CPU_ROWS SP_CPU_SESSIONS \
-          ROLLOUT_THREADS DEVICE EPOCHS LR WORKERS \
+for _k in N_PER SIMS SIMS_CHEAP_FRAC SIMS_FULL_FRAC SP_POOL SP_WORKERS SP_LONG_DECAY \
+          DEVICE EPOCHS LR WORKERS \
           LOSS_CHUNK PI_WEIGHT REPLAY_ROUNDS REPLAY_DECAY \
           SOFT_TARGET SOFT_TEMP TEMP_MOVES DIR_TOTAL DIR_EPS \
           GATE_GAMES GATE_N_PER GATE_MARGIN GATE_SEED0 STAMP ROUNDS; do
@@ -123,11 +115,11 @@ ledger() {                                    # ledger <文件> <键> <值>
 
 [ -f "$NET" ] || die "起步权重不存在：$NET（新实例上先蒸馏一个，或从别处拷成这个名字）"
 BUDGET="MCTS($SIMS)"
-if [ "$SIMS_CHEAP" -gt 0 ]; then     # 只给日志看：两档 + 比例（浮点算术交给 awk）
-    BUDGET="$(awk -v c="$SIMS_CHEAP" -v s="$SIMS" -v f="$SIMS_FULL_FRAC" \
-        'BEGIN{printf "MCTS(%d×%.0f%% + %d×%.0f%%)", c, 100 * (1 - f), s, 100 * f}')"
+if awk -v cf="$SIMS_CHEAP_FRAC" 'BEGIN{exit !(cf + 0 > 0)}'; then     # 只给日志看：两档 + 比例（浮点算术交给 awk）
+    BUDGET="$(awk -v cf="$SIMS_CHEAP_FRAC" -v s="$SIMS" -v f="$SIMS_FULL_FRAC" \
+        'BEGIN{c = int(s * cf + 0.5); if (c < 2) c = 2; printf "MCTS(%d×%.0f%% + %d×%.0f%%)", c, 100 * (1 - f), s, 100 * f}') "
 fi
-say "起点 $NET｜设备 $DEVICE（前向 $ROLLOUT_THREADS 线程）｜采集 $N_PER 场/项 × $BUDGET × 池宽 $SP_POOL / $SP_WORKERS 线程 / 攒批 $SP_BATCH_WAITµs / 尾段 CPU $SP_CPU_SESSIONS 会话(≤$SP_CPU_ROWS 行)"
+say "起点 $NET｜设备 $DEVICE｜采集 $N_PER 场/项 × $BUDGET × 池宽 $SP_POOL / $SP_WORKERS 线程"
 say "训练 $EPOCHS ep lr=$LR 目标 $SOFT_KIND π权重=$PI_WEIGHT 回放=$REPLAY_ROUNDS 轮(衰减 $REPLAY_DECAY)｜门控 $GATE_N_PER 场/项 裸网络｜日志 $LOGD"
 
 CUR="$NET"      # 连续链：采集与训练都用它
@@ -161,11 +153,10 @@ while :; do
 
     "$PY" -u collect_selfplay.py --n "$N_PER" --sims "$SIMS" --net-path "$CUR" \
         --start-seed "$SEED0" \
-        --sims-cheap "$SIMS_CHEAP" --sims-full-frac "$SIMS_FULL_FRAC" \
+        --sims-cheap-frac "$SIMS_CHEAP_FRAC" --sims-full-frac "$SIMS_FULL_FRAC" \
         --cache "data/$SP_STEM" --pool "$SP_POOL" --workers "$SP_WORKERS" \
-        --batch-wait-us "$SP_BATCH_WAIT" --batch-target "$SP_BATCH_TARGET" \
-        --cpu-rows "$SP_CPU_ROWS" --cpu-sessions "$SP_CPU_SESSIONS" \
-        --rollout-threads "$ROLLOUT_THREADS" --device "$DEVICE" \
+        --long-decay-start "$SP_LONG_DECAY" \
+        --device "$DEVICE" \
         --temp-moves "$TEMP_MOVES" --dirichlet-total "$DIR_TOTAL" --dirichlet-eps "$DIR_EPS" \
         >"$LOGD/collect_$r.log" 2>&1 || die "[$r] 采集失败 ⇒ collect_$r.log"
     DATA="$(pick 产物目录 "$LOGD/collect_$r.log")"
